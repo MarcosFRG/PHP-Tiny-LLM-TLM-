@@ -153,7 +153,7 @@ La respuesta será:
 ```json
 {
   "success": true,
-  "id": "chatcmpl-1234567890",
+  "id": "chatcmpl-67d8f1a2b3c4d",
   "choices": [
     {
       "message": {
@@ -161,7 +161,13 @@ La respuesta será:
         "content": "PHP es un lenguaje de programación..."
       }
     }
-  ]
+  ],
+  "usage": {
+    "prompt_tokens": 42,
+    "completion_tokens": 37,
+    "total_tokens": 79
+  },
+  "timing_ms": 234
 }
 ```
 
