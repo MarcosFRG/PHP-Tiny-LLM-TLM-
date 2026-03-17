@@ -438,32 +438,84 @@ class LLM {
   }
 
   private function saveRWKV(string $path): void {
-    $data = [];
+    $fp = fopen($path, 'wb');
+    if (!$fp) return;
+
+    fwrite($fp, pack('V', count($this->rwkvBlocks))); // numLayers
+    fwrite($fp, pack('V', $this->embedDim));          // dim
+
     foreach ($this->rwkvBlocks as $block) {
-      $data[] = [
-        'wk' => $block->wk,
-        'wv' => $block->wv,
-        'wr' => $block->wr,
-        'ww' => $block->ww,
-        'w1' => $block->w1,
-        'w2' => $block->w2
-      ];
+      $dim = $block->dim;
+
+      // wk
+      for ($i = 0; $i < $dim; $i++) {
+        for ($j = 0; $j < $dim; $j++) fwrite($fp, pack('f', $block->wk[$i][$j]));
+      }
+      // wv
+      for ($i = 0; $i < $dim; $i++) {
+        for ($j = 0; $j < $dim; $j++) fwrite($fp, pack('f', $block->wv[$i][$j]));
+      }
+      // wr
+      for ($i = 0; $i < $dim; $i++) {
+        for ($j = 0; $j < $dim; $j++) fwrite($fp, pack('f', $block->wr[$i][$j]));
+      }
+      // ww
+      for ($i = 0; $i < $dim; $i++) fwrite($fp, pack('f', $block->ww[$i]));
+      // w1 (dim*4 filas, dim columnas)
+      $rowsW1 = $dim * 4;
+      for ($i = 0; $i < $rowsW1; $i++) {
+        for ($j = 0; $j < $dim; $j++) fwrite($fp, pack('f', $block->w1[$i][$j]));
+      }
+      // w2 (dim filas, dim*4 columnas)
+      $colsW2 = $dim * 4;
+      for ($i = 0; $i < $dim; $i++) {
+        for ($j = 0; $j < $colsW2; $j++) fwrite($fp, pack('f', $block->w2[$i][$j]));
+      }
     }
-    file_put_contents($path, serialize($data));
+    fclose($fp);
   }
 
+  /**
+   * Carga los bloques RWKV desde un archivo binario.
+   */
   private function loadRWKV(string $path): void {
-    $data = unserialize(file_get_contents($path));
-    foreach ($data as $blockData) {
-      $block = new RWKVBlock($this->embedDim);
-      $block->wk = $blockData['wk'];
-      $block->wv = $blockData['wv'];
-      $block->wr = $blockData['wr'];
-      $block->ww = $blockData['ww'];
-      $block->w1 = $blockData['w1'];
-      $block->w2 = $blockData['w2'];
+    $fp = fopen($path, 'rb');
+    if (!$fp) return;
+
+    $numLayers = unpack('V', fread($fp, 4))[1];
+    $dim = unpack('V', fread($fp, 4))[1];
+
+    for ($layer = 0; $layer < $numLayers; $layer++) {
+      $block = new RWKVBlock($dim);
+
+      // wk
+      for ($i = 0; $i < $dim; $i++) {
+        for ($j = 0; $j < $dim; $j++) $block->wk[$i][$j] = unpack('f', fread($fp, 4))[1];
+      }
+      // wv
+      for ($i = 0; $i < $dim; $i++) {
+        for ($j = 0; $j < $dim; $j++) $block->wv[$i][$j] = unpack('f', fread($fp, 4))[1];
+      }
+      // wr
+      for ($i = 0; $i < $dim; $i++) {
+        for ($j = 0; $j < $dim; $j++) $block->wr[$i][$j] = unpack('f', fread($fp, 4))[1];
+      }
+      // ww
+      for ($i = 0; $i < $dim; $i++) $block->ww[$i] = unpack('f', fread($fp, 4))[1];
+      // w1 (dim * 4 filas, dim columnas)
+      $rowsW1 = $dim * 4;
+      for ($i = 0; $i < $rowsW1; $i++) {
+        for ($j = 0; $j < $dim; $j++) $block->w1[$i][$j] = unpack('f', fread($fp, 4))[1];
+      }
+      // w2 (dim filas, dim*4 columnas)
+      $colsW2 = $dim * 4;
+      for ($i = 0; $i < $dim; $i++) {
+        for ($j = 0; $j < $colsW2; $j++) $block->w2[$i][$j] = unpack('f', fread($fp, 4))[1];
+      }
+
       $this->rwkvBlocks[] = $block;
     }
+    fclose($fp);
   }
 
   private function averageEmbedding(array $ids): array {
@@ -588,9 +640,7 @@ class LLM {
 
     for ($i = 0; $i < $maxTokens; $i++) {
       $logits = [];
-      foreach ($this->embeddings as $id => $emb) {
-        $logits[$id] = $this->cosineSimilarity($lastOutput, $emb);
-      }
+      foreach ($this->embeddings as $id => $emb) $logits[$id] = $this->cosineSimilarity($lastOutput, $emb);
 
       // Aplicar temperatura
       $maxLogit = max($logits);

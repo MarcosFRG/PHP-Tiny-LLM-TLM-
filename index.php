@@ -59,7 +59,7 @@ if ($action === 'train_qa' && $_SERVER['REQUEST_METHOD'] === 'POST') {
             echo json_encode(['success' => false, 'message' => 'La pregunta y la respuesta no pueden estar vacías.']);
             exit;
         }
-        $text = "<|USER|>\n$question\n<|EOS|>\n<|ASSISSTANT|>\n$answer\n<|EOS|>";
+        $text = "<|USER|>\n$question\n<|EOS|>\n<|ASSISTANT|>\n$answer\n<|EOS|>";
         $llm->train($text);
         echo json_encode([
             'success' => true,
@@ -153,7 +153,9 @@ if ($action === 'delete_model' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         $files = [
             $modelDir . '/tokenizer.json',
-            $modelDir . '/model.ppm'
+            $modelDir . '/model.ppm',
+            $modelDir . '/embeddings.bin',
+            $modelDir . '/rwkv.bin'
         ];
         $deleted = [];
         $errors = [];
