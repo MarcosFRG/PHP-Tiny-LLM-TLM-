@@ -42,9 +42,7 @@ class Tokenizer {
 
   public function decode(array $ids): array {
     $tokens = [];
-    foreach ($ids as $id) {
-      $tokens[] = $this->vocab[$id] ?? '<UNK>';
-    }
+    foreach ($ids as $id) $tokens[] = $this->vocab[$id] ?? '<UNK>';
     return $tokens;
   }
 
@@ -82,9 +80,7 @@ class PPMTrie {
   public function add(array $context, int $nextToken): void {
     $node = &$this->root;
     foreach ($context as $token) {
-      if (!isset($node['children'][$token])) {
-        $node['children'][$token] = ['counts' => [], 'children' => []];
-      }
+      if (!isset($node['children'][$token])) $node['children'][$token] = ['counts' => [], 'children' => []];
       $node = &$node['children'][$token];
     }
     if (!isset($node['counts'][$nextToken])) {
@@ -285,8 +281,8 @@ class LLM {
   private string $modelDir;
   private int $maxContext;
   private array $specialTokens = ['<|SYSTEM|>', '<|USER|>', '<|ASSISTANT|>', '<|EOS|>', '<EOS>'];
-  private array $noSpaceBefore = ['.', ',', '!', '?', ';', ':', ')', ']', '}', '”', '’', '»', '¡', '¿'];
-  private array $noSpaceAfter = ['(', '[', '{', '“', '‘', '«'];
+  private array $noSpaceBefore = ['.', ',', '!', '?', ';', ':', ')', ']', '}', '”', '’', '»'];
+  private array $noSpaceAfter = ['(', '[', '{', '“', '‘', '«', '¡', '?'];
 
   public function __construct(string $modelDir, int $maxContext = 512) {
     $this->modelDir = $modelDir;
