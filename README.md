@@ -1,6 +1,6 @@
 # PHP TLM - Modelo de Lenguaje Pequeño en PHP
 
-¡Bienvenido a **PHP TLM**! Un modelo de lenguaje pequeño (tiny) implementado completamente en PHP que ha evolucionado hasta convertirse en una **arquitectura neuronal profunda con atención, memoria episódica y generación incremental**. Ideal para experimentar, aprender y ejecutar en entornos de alojamiento compartido sin necesidad de GPUs.
+¡Bienvenido a **PHP TLM**! Un modelo de lenguaje pequeño (tiny) implementado completamente en PHP que ha evolucionado hasta convertirse en una **arquitectura RWKV (Receptance Weighted Key Value)** completa, combinando lo mejor de transformers y RNNs. Ideal para experimentar, aprender y ejecutar en entornos de alojamiento compartido sin necesidad de GPUs.
 
 ## Características
 
@@ -10,14 +10,13 @@
 - ✅ **Parámetros avanzados**: temperatura, top‑K, top‑P, penalización de frecuencia, penalización de presencia y penalización de repetición.
 - ✅ **Persistencia**: el modelo se guarda en disco (`models/tiny-php/`) y se recarga automáticamente.
 - ✅ **Historial de conversación** y exportación a JSON o texto.
-- ✅ **Arquitectura profunda**: 4 capas con atención lineal, convoluciones temporales y mezcladores de canales.
-- ✅ **Memoria episódica**: `ConversationalMemory` con compresión de contexto y recuperación por similitud.
-- ✅ **Generación incremental con KV cache**: atención eficiente que reutiliza claves y valores precomputados.
-- ✅ **Búsqueda rápida de tokens**: clustering k-means sobre embeddings para acelerar la predicción.
+- ✅ **Arquitectura RWKV**: 4 bloques con time mixing y channel mixing, estados recurrentes.
+- ✅ **Complejidad lineal O(n)**: generación rápida incluso con contextos largos.
+- ✅ **Memoria recurrente**: cada capa mantiene su propio estado (NUM y DEN) para contexto infinito teórico.
 
 ## 🧠 Arquitectura del modelo
 
-PHP TLM ya no es un simple modelo estadístico. Ahora combina **PPM (Prediction by Partial Matching)** con una **red neuronal profunda** que aprende representaciones semánticas. La arquitectura actual es:
+PHP TLM ha migrado de una arquitectura transformer-like a **RWKV**, un modelo de vanguardia que combina la eficiencia de las RNNs con la calidad de los transformers. La arquitectura actual es:
 
 ### Componentes principales
 
@@ -25,34 +24,36 @@ PHP TLM ya no es un simple modelo estadístico. Ahora combina **PPM (Prediction 
 |------------|-------------|
 | **Tokenizer** | Segmentación en tokens usando expresiones regulares (soporta caracteres Unicode y tokens especiales). |
 | **Embeddings** | Vectores de 128 dimensiones para cada token, aprendidos durante el entrenamiento. |
-| **PPMTrie** | Modelo estadístico clásico que complementa las predicciones neuronales. |
-| **LinearAttention** | Atención lineal con complejidad O(n) en lugar de O(n²), implementada con KV cache para generación rápida. |
-| **TemporalConvLayer** | Capa convolucional 1D con kernel tamaño 3 para capturar dependencias locales. |
-| **ChannelMixer** | MLP con activación ReLU y gating (similar a MLP-Mixer) para mezclar información entre canales. |
-| **ConversationalMemory** | Memoria episódica que almacena vectores recientes y los comprime en representaciones resumidas cuando es necesario. |
-| **LayerNorm** | Normalización por capas para estabilizar el entrenamiento. |
-| **Token Clustering** | Agrupación de tokens mediante k-means para búsqueda rápida durante la generación. |
+| **PPMTrie** | Modelo estadístico clásico que complementa las predicciones neuronales (opcional). |
+| **RWKVBlock** | Bloque RWKV que incluye: |
+| │ ├─ **wk, wv, wr** | Pesos para key, value y receptance. |
+| │ ├─ **ww** | Vector de decay (aprendible) para cada dimensión. |
+| │ ├─ **w1, w2** | Pesos del feed-forward network (channel mixing). |
+| │ └─ **state** | Estado recurrente compuesto por `num` y `den` para cada dimensión. |
+| **WKV computation** | Núcleo de RWKV: atención lineal recurrente que actualiza el estado. |
+| **Time mixing** | Mezcla información temporal usando el estado recurrente y el decay. |
+| **Channel mixing** | FFN con activación ReLU y gating (similar a MLP-Mixer). |
 
 ### Flujo de generación
 
 1. El prompt se tokeniza y convierte a IDs.
-2. Los embeddings iniciales se añaden a la `ConversationalMemory`.
-3. Para cada nuevo token:
-   - Se aplica **atención incremental** usando KV cache (solo se calculan Q para el token actual, K y V se reutilizan).
-   - Se aplica **convolución temporal** sobre los últimos tokens.
-   - Se mezclan canales con **ChannelMixer**.
-   - Se normaliza con **LayerNorm**.
-   - El vector resultante se usa para buscar el token más similar mediante **clustering**.
-   - Se aplican penalizaciones (frecuencia, repetición, presencia) y sampling (top‑K, top‑P).
+2. Para cada token del prompt, se ejecuta `forwardRWKV`, que:
+   - Toma el embedding del token.
+   - Lo pasa por cada bloque RWKV, actualizando los estados recurrentes.
+3. Durante la generación:
+   - El último vector de salida se compara con todos los embeddings (similitud coseno).
+   - Se aplican temperatura, top‑K, top‑P y penalizaciones.
+   - Se selecciona el siguiente token.
+   - El nuevo token se procesa con `forwardRWKV`, actualizando los estados.
 4. La respuesta se construye concatenando los tokens generados.
 
-Esta arquitectura permite que el modelo **generalice mejor** y **comprenda relaciones semánticas** más allá de la simple frecuencia estadística. Sin embargo, requiere **más datos de entrenamiento** para que los embeddings y las capas profundas aprendan representaciones útiles.
+Esta arquitectura **entiende mejor las relaciones semánticas** y **generaliza de forma más natural** que las versiones anteriores, manteniendo una velocidad de generación competitiva gracias a su complejidad lineal.
 
 ## Archivos del proyecto
 
 - `index.php` – Interfaz web principal.
 - `OpenAI.php` – Endpoint estilo OpenAI (Chat completions).
-- `LLM.php` – Clases `Tokenizer`, `PPMTrie`, `LinearAttention`, `TemporalConvLayer`, `ChannelMixer`, `ConversationalMemory` y `LLM`.
+- `LLM.php` – Clases `Tokenizer`, `PPMTrie`, `RWKVBlock` y `LLM`.
 
 ## Requisitos
 
@@ -105,7 +106,7 @@ for($i=0;$i<10;$i++){ echo $i; }
 
 Puedes incluir este texto directamente en la pestaña **"Entrenar"**.
 
-> **Nota importante**: La nueva arquitectura neuronal requiere **mucho más entrenamiento** que la versión puramente estadística. Para obtener respuestas coherentes, necesitarás al menos varios cientos de ejemplos o un texto largo y variado. La generación será más lenta al principio, pero mejorará a medida que el modelo aprenda.
+> **Nota importante**: La arquitectura RWKV requiere **entrenamiento sustancial** para que los pesos aprendan representaciones útiles. Para obtener respuestas coherentes, necesitarás al menos varios cientos de ejemplos o un texto largo y variado. La generación será más lenta al principio, pero mejorará a medida que el modelo aprenda.
 
 ### 2. Chatear con el modelo (pestaña "Chatear")
 
@@ -123,7 +124,7 @@ Puedes ajustar los parámetros de generación:
 
 ### 3. Gestión del modelo (pestaña "Debug")
 
-- **Eliminar modelo completo**: borra los archivos `tokenizer.json`, `model.ppm` y `embeddings.bin` y reinicia el modelo desde cero.
+- **Eliminar modelo completo**: borra los archivos `tokenizer.json`, `model.ppm`, `embeddings.bin` y `rwkv.bin` y reinicia el modelo desde cero.
 - **Exportar historial**: puedes guardar la conversación en JSON o texto.
 
 ## API estilo OpenAI (endpoint `OpenAI.php`)
@@ -168,26 +169,27 @@ La respuesta será:
 
 ## Estructura de almacenamiento del modelo
 
-El modelo se guarda en la carpeta `models/<nombre-del-modelo>/` con tres archivos:
+El modelo se guarda en la carpeta `models/<nombre-del-modelo>/` con cuatro archivos:
 
 - `tokenizer.json` – Vocabulario y mapeo token → id.
 - `model.ppm` – Árbol PPM en formato binario.
 - `embeddings.bin` – Vectores de embeddings en formato binario.
+- `rwkv.bin` – Pesos serializados de los bloques RWKV.
 
 ## Consejos para un mejor entrenamiento
 
 - Usa el formato con `<|USER|>` y `<|ASSISTANT|>` para diálogos.
 - Separa cada turno con `<|EOS|>`.
-- **Entrena con mucho texto**: La nueva arquitectura necesita más datos. Cuanto más variado, mejor.
+- **Entrena con mucho texto**: RWKV necesita datos para ajustar sus pesos. Cuanto más variado, mejor.
 - Experimenta con los parámetros de generación (especialmente temperatura y top‑K) para ajustar la creatividad.
-- Si el modelo no genera bien al principio, **sigue entrenando**. Los embeddings y las capas profundas tardan en converger.
+- Si el modelo no genera bien al principio, **sigue entrenando**. Los pesos RWKV tardan en converger.
 
 ## Limitaciones
 
-- Modelo relativamente pequeño (contexto máximo 512 tokens, embeddings 128d, 4 capas). No esperes respuestas largas ni extremadamente coherentes en temas complejos sin suficiente entrenamiento.
+- Modelo de tamaño moderado (embeddings 128d, 4 capas). No esperes respuestas extremadamente coherentes en temas complejos sin suficiente entrenamiento.
 - La tokenización es basada en expresiones regulares simples, no usa subword (BPE).
-- El algoritmo PPM y las capas neuronales pueden consumir memoria si se entrena con mucho texto.
-- La generación es más lenta que en versiones anteriores debido a la complejidad de las capas, pero la KV cache ayuda a mantenerla razonable.
+- El algoritmo PPM y los bloques RWKV pueden consumir memoria si se entrena con mucho texto.
+- La generación es más rápida que en transformers gracias a la recurrencia, pero el entrenamiento inicial puede ser lento.
 
 ## Solución de problemas
 
@@ -200,7 +202,8 @@ El modelo se guarda en la carpeta `models/<nombre-del-modelo>/` con tres archivo
 
 - **v0.1-alpha**: Modelo basado únicamente en PPM (estadístico).
 - **v0.2-alpha**: Introducción de embeddings y caché semántico híbrido.
-- **v0.3-alpha**: Arquitectura completa con atención lineal, capas convolucionales, mezcladores, memoria episódica, generación incremental con KV cache y clustering de tokens. **Requiere más entrenamiento pero generaliza mejor**.
+- **v0.3-alpha**: Arquitectura transformer-like con atención lineal, capas convolucionales y mezcladores.
+- **v0.4-alpha**: **Arquitectura RWKV completa** con time mixing, channel mixing y estados recurrentes. **Mayor capacidad de comprensión y generalización**, velocidad lineal O(n).
 
 ---
 
