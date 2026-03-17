@@ -1,6 +1,6 @@
-# PHP LLM - Modelo de Lenguaje Pequeño en PHP
+# PHP TLM - Modelo de Lenguaje Pequeño en PHP
 
-¡Bienvenido a **PHP LLM**! Un modelo de lenguaje pequeño (tiny) implementado completamente en PHP, basado en **PPM (Prediction by Partial Matching)** y tokenización simple. Ideal para experimentar, aprender y ejecutar en entornos de alojamiento compartido sin necesidad de GPUs.
+¡Bienvenido a **PHP TLM**! Un modelo de lenguaje pequeño (tiny) implementado completamente en PHP, basado en **PPM (Prediction by Partial Matching)** y tokenización simple. Ideal para experimentar, aprender y ejecutar en entornos de alojamiento compartido sin necesidad de GPUs.
 
 ## Características
 
