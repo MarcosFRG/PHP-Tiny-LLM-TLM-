@@ -2,7 +2,7 @@
 
 _(Experimental)_
 
-¡Bienvenido a **PHP TLM**! Un modelo de lenguaje pequeño (tiny) implementado completamente en PHP que ha evolucionado hasta convertirse en una **arquitectura RWKV (Receptance Weighted Key Value)** completa, combinando lo mejor de transformers y RNNs. Ideal para experimentar, aprender y ejecutar en entornos de alojamiento compartido sin necesidad de GPUs.
+¡Bienvenido a **PHP TLM**! Un modelo de lenguaje pequeño (tiny) implementado completamente en PHP que ahora utiliza una **Echo State Network (ESN)** , un tipo de red neuronal recurrente con reservorio de estado líquido. Ideal para experimentar, aprender y ejecutar en entornos de alojamiento compartido sin necesidad de GPUs.
 
 ## Características
 
@@ -10,67 +10,66 @@ _(Experimental)_
 - ✅ **Interfaz web** con pestañas para entrenar, chatear y depurar.
 - ✅ **API compatible con OpenAI** (endpoint `/chat/completions`) para integrar con otras aplicaciones.
 - ✅ **Parámetros avanzados**: temperatura, top‑K, top‑P, penalización de frecuencia, penalización de presencia y penalización de repetición.
-- ✅ **Persistencia**: el modelo se guarda en disco (`models/tiny-php/`) y se recarga automáticamente.
+- ✅ **Persistencia**: el modelo se guarda en disco (`all-models/tiny-php/`) y se recarga automáticamente.
 - ✅ **Historial de conversación** y exportación a JSON o texto.
-- ✅ **Arquitectura RWKV**: 4 bloques con time mixing y channel mixing, estados recurrentes.
+- ✅ **Arquitectura ESN**: reservorio de 500 neuronas con conexiones dispersas y fijas, solo se entrena la capa de salida.
 - ✅ **Complejidad lineal O(n)**: generación rápida incluso con contextos largos.
-- ✅ **Memoria recurrente**: cada capa mantiene su propio estado (NUM y DEN) para contexto infinito teórico.
+- ✅ **Memoria de corto plazo**: el estado del reservorio se actualiza con cada token, manteniendo información contextual.
 
 ## 🧠 Arquitectura del modelo
 
-PHP TLM ha migrado de una arquitectura transformer-like a **RWKV**, un modelo de vanguardia que combina la eficiencia de las RNNs con la calidad de los transformers. La arquitectura actual es:
+PHP TLM ha adoptado una **Echo State Network**, un modelo recurrente eficiente donde la parte recurrente (el reservorio) se inicializa aleatoriamente y no se entrena, mientras que solo la capa de salida se ajusta mediante gradiente descendente. Esto permite un entrenamiento rápido y una buena capacidad de modelado secuencial.
 
 ### Componentes principales
 
 | Componente | Descripción |
 |------------|-------------|
 | **Tokenizer** | Segmentación en tokens usando expresiones regulares (soporta caracteres Unicode y tokens especiales). |
-| **Embeddings** | Vectores de 128 dimensiones para cada token, aprendidos durante el entrenamiento. |
-| **PPMTrie** | Modelo estadístico clásico que complementa las predicciones neuronales (opcional). |
-| **RWKVBlock** | Bloque RWKV que incluye: |
-| │ ├─ **wk, wv, wr** | Pesos para key, value y receptance. |
-| │ ├─ **ww** | Vector de decay (aprendible) para cada dimensión. |
-| │ ├─ **w1, w2** | Pesos del feed-forward network (channel mixing). |
-| │ └─ **state** | Estado recurrente compuesto por `num` y `den` para cada dimensión. |
-| **WKV computation** | Núcleo de RWKV: atención lineal recurrente que actualiza el estado. |
-| **Time mixing** | Mezcla información temporal usando el estado recurrente y el decay. |
-| **Channel mixing** | FFN con activación ReLU y gating (similar a MLP-Mixer). |
+| **Embeddings** | Vectores de 100 dimensiones para cada token, aprendidos durante el entrenamiento (solo la capa de salida). |
+| **Reservorio (500 unidades)** | Red recurrente con conexiones dispersas (10% de densidad) y fijas. Su estado se actualiza con cada token. |
+| **Matriz de entrada (`W_in`)** | Conexiones desde el embedding (100d) al reservorio (500d), dispersas y fijas. |
+| **Matriz recurrente (`W_res`)** | Conexiones dentro del reservorio, dispersas y fijas, escaladas para controlar el radio espectral. |
+| **Bias** | Vector de bias fijo para el reservorio. |
+| **Capa de salida (`W_out`)** | Matriz entrenable que mapea el estado del reservorio a logits sobre el vocabulario. Se actualiza con SGD. |
+| **Función de activación** | `tanh` en las neuronas del reservorio. |
 
 ### Flujo de generación
 
 1. El prompt se tokeniza y convierte a IDs.
-2. Para cada token del prompt, se ejecuta `forwardRWKV`, que:
-   - Toma el embedding del token.
-   - Lo pasa por cada bloque RWKV, actualizando los estados recurrentes.
+2. Para cada token del prompt, se actualiza el estado del reservorio:
+   - Se obtiene el embedding del token.
+   - Se calcula la nueva entrada combinando la contribución de la entrada (`W_in * embedding`) y la recurrente (`W_res * estado anterior`) más el bias.
+   - Se aplica `tanh` para obtener el nuevo estado.
 3. Durante la generación:
-   - El último vector de salida se compara con todos los embeddings (similitud coseno).
+   - El estado actual del reservorio se multiplica por `W_out` para obtener logits sobre todo el vocabulario.
    - Se aplican temperatura, top‑K, top‑P y penalizaciones.
    - Se selecciona el siguiente token.
-   - El nuevo token se procesa con `forwardRWKV`, actualizando los estados.
+   - El nuevo token se procesa igual que en el paso 2, actualizando el estado.
 4. La respuesta se construye concatenando los tokens generados.
 
-Esta arquitectura **entiende mejor las relaciones semánticas** y **generaliza de forma más natural** que las versiones anteriores, manteniendo una velocidad de generación competitiva gracias a su complejidad lineal.
+Esta arquitectura **aprende patrones secuenciales de forma eficiente** y **generaliza bien con relativamente pocos parámetros entrenables**, manteniendo una velocidad de generación constante.
 
 ## Archivos del proyecto
 
 - `index.php` – Interfaz web principal.
 - `OpenAI.php` – Endpoint estilo OpenAI (Chat completions).
-- `LLM.php` – Clases `Tokenizer`, `PPMTrie`, `RWKVBlock` y `LLM`.
+- `Models.php` – Endpoint que muestra la lista de modelos disponibles.
+- `LLM.php` – Clases `Tokenizer`, `EchoStateLM` y `LLM`.
 
 ## Requisitos
 
 - PHP 7.4 o superior.
 - Extensiones: `json`, `fileinfo` (opcional, para algunos entornos).
-- Permisos de escritura en la carpeta `models/`.
+- Permisos de escritura en la carpeta `all-models/`.
 
 ## Instalación
 
 1. **Descarga** todos los archivos (`index.php`, `OpenAI.php`, `LLM.php`) en la **raíz** de tu servidor web (por ejemplo, `/var/www/html/`).
-2. **Crea la carpeta `models`** y dale permisos de escritura:
+2. **Crea la carpeta `all-models`** y dale permisos de escritura:
 
    ```bash
-   mkdir models
-   chmod 777 models
+   mkdir all-models
+   chmod 777 all-models
    ```
 
 3. **Accede** a `http://tusitio.com/index.php` desde tu navegador.
@@ -84,7 +83,7 @@ Esta arquitectura **entiende mejor las relaciones semánticas** y **generaliza d
 Puedes entrenar el modelo con texto libre o con pares de preguntas/respuestas.
 
 #### Entrenamiento libre (pestaña "Entrenar")
-Pega cualquier texto (cuentos, documentación, conversaciones) y haz clic en **"Entrenar modelo"**. El modelo procesará el texto en lotes separados por líneas vacías, añadiendo automáticamente `<|EOS|>` si falta.
+Pega cualquier texto (cuentos, documentación, conversaciones) y haz clic en **"Entrenar modelo"**. El modelo procesará el texto dividiéndolo en lotes separados por el patrón `EOS>\n\n<|` (es decir, cada vez que aparece `<|EOS|>` seguido de línea vacía y otro token especial). Si falta `<|EOS|>` al final de un lote, se añade automáticamente.
 
 #### Entrenamiento con preguntas y respuestas (pestaña "QA")
 Recomendamos usar este formato para que el modelo aprenda diálogos. Escribe una **pregunta** y una **respuesta** y presiona **"Entrenar QA"**. Internamente se concatenan y se añade el token `<|EOS|>`.
@@ -108,7 +107,7 @@ for($i=0;$i<10;$i++){ echo $i; }
 
 Puedes incluir este texto directamente en la pestaña **"Entrenar"**.
 
-> **Nota importante**: La arquitectura RWKV requiere **entrenamiento sustancial** para que los pesos aprendan representaciones útiles. Para obtener respuestas coherentes, necesitarás al menos varios cientos de ejemplos o un texto largo y variado. La generación será más lenta al principio, pero mejorará a medida que el modelo aprenda.
+> **Nota importante**: La arquitectura ESN requiere **entrenamiento sustancial** para que la capa de salida aprenda representaciones útiles. Para obtener respuestas coherentes, necesitarás al menos varios cientos de ejemplos o un texto largo y variado. La generación será más lenta al principio, pero mejorará a medida que el modelo aprenda.
 
 ### 2. Chatear con el modelo (pestaña "Chatear")
 
@@ -126,7 +125,7 @@ Puedes ajustar los parámetros de generación:
 
 ### 3. Gestión del modelo (pestaña "Debug")
 
-- **Eliminar modelo completo**: borra los archivos `tokenizer.json`, `model.ppm`, `embeddings.bin` y `rwkv.bin` y reinicia el modelo desde cero.
+- **Eliminar modelo completo**: borra los archivos `tokenizer.json` y `model.bin` y reinicia el modelo desde cero.
 - **Exportar historial**: puedes guardar la conversación en JSON o texto.
 
 ## API estilo OpenAI (endpoint `OpenAI.php`)
@@ -173,45 +172,44 @@ La respuesta será algo como:
 }
 ```
 
-**Nota:** El modelo se guarda en `models/tiny-php/` (por defecto). Puedes cambiar el nombre del modelo en el campo `model` (se creará una subcarpeta dentro de `models`) y ver la lista por el endpoint `/models` (o directamente por el archivo `Models.php`).
+**Nota:** El modelo se guarda en `all-models/tiny-php/` (por defecto). Puedes cambiar el nombre del modelo en el campo `model` (se creará una subcarpeta dentro de `all-models`).
 
 ## Estructura de almacenamiento del modelo
 
-El modelo se guarda en la carpeta `models/<nombre-del-modelo>/` con cuatro archivos:
+El modelo se guarda en la carpeta `all-models/<nombre-del-modelo>/` con dos archivos:
 
 - `tokenizer.json` – Vocabulario y mapeo token → id.
-- `model.ppm` – Árbol PPM en formato binario.
-- `embeddings.bin` – Vectores de embeddings en formato binario.
-- `rwkv.bin` – Pesos serializados de los bloques RWKV.
+- `model.bin` – Pesos del modelo ESN en formato binario (incluye embeddings, matrices dispersas, bias y capa de salida).
 
 ## Consejos para un mejor entrenamiento
 
 - Usa el formato con `<|USER|>` y `<|ASSISTANT|>` para diálogos.
 - Separa cada turno con `<|EOS|>`.
-- **Entrena con mucho texto**: RWKV necesita datos para ajustar sus pesos. Cuanto más variado, mejor.
+- **Entrena con mucho texto**: La ESN necesita datos para ajustar la capa de salida. Cuanto más variado, mejor.
 - Experimenta con los parámetros de generación (especialmente temperatura y top‑K) para ajustar la creatividad.
-- Si el modelo no genera bien al principio, **sigue entrenando**. Los pesos RWKV tardan en converger.
+- Si el modelo no genera bien al principio, **sigue entrenando**. La capa de salida tarda en converger.
 
 ## Limitaciones
 
-- Modelo de tamaño moderado (embeddings 128d, 4 capas). No esperes respuestas extremadamente coherentes en temas complejos sin suficiente entrenamiento.
+- Modelo de tamaño moderado (reservorio 500, embeddings 100d). No esperes respuestas extremadamente coherentes en temas complejos sin suficiente entrenamiento.
 - La tokenización es basada en expresiones regulares simples, no usa subword (BPE).
-- El algoritmo PPM y los bloques RWKV pueden consumir memoria si se entrena con mucho texto.
-- La generación es más rápida que en transformers gracias a la recurrencia, pero el entrenamiento inicial puede ser lento.
+- El reservorio es fijo y no se adapta durante el entrenamiento; toda la plasticidad recae en la capa de salida.
+- La generación es rápida (O(n) lineal), pero el entrenamiento puede ser lento con lotes muy grandes.
 
 ## Solución de problemas
 
-- **Error "No se puede escribir en models/"** → Verifica permisos de la carpeta `models`.
+- **Error "No se puede escribir en models/"** → Verifica permisos de la carpeta `all-models`.
 - **El modelo no responde o da respuestas vacías** → Entrena con más ejemplos o revisa el formato de los mensajes.
 - **La interfaz muestra "El servidor devolvió HTML"** → Mira la pestaña **Debug** para ver el error real del servidor.
-- **Generación muy lenta** → Reduce el número de capas (`$numLayers` en `LLM.php`) o la dimensión de embeddings (`$embedDim`). O simplemente ten paciencia mientras el modelo aprende.
+- **Generación muy lenta** → Reduce el tamaño del reservorio (`reservoirSize` en `EchoStateLM`) o la dimensión de embeddings (`embedDim`).
 
 ## Historial de versiones
 
 - **v0.1-alpha**: Modelo basado únicamente en PPM (estadístico).
 - **v0.2-alpha**: Introducción de embeddings y caché semántico híbrido.
 - **v0.3-alpha**: Arquitectura transformer-like con atención lineal, capas convolucionales y mezcladores.
-- **v0.4-alpha**: **Arquitectura RWKV completa** con time mixing, channel mixing y estados recurrentes. **Mayor capacidad de comprensión y generalización**, velocidad lineal O(n).
+- **v0.4-alpha**: Arquitectura RWKV completa con time mixing, channel mixing y estados recurrentes.
+- **v0.5-alpha**: **Arquitectura Echo State Network (ESN)** con reservorio fijo y capa de salida entrenable. **Mayor eficiencia y buena capacidad de modelado secuencial**, velocidad lineal O(n).
 
 ---
 
