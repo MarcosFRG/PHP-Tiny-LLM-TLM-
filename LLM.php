@@ -64,607 +64,178 @@ class Tokenizer {
   }
 }
 
-class PPMTrie {
-  private array $root;
-  private array $globalCounts;
-  private int $totalTokens;
+class EchoStateLM {
+  private int $embedDim = 100;
+  private int $reservoirSize = 500;
+  private float $lr = 0.1;
+  private float $spectralRadius = 0.9;
+  private float $sparsity = 0.1;
 
-  public function __construct() {
-    $this->root = [];
-    $this->globalCounts = [];
-    $this->totalTokens = 0;
+  private array $embeddings;
+  private array $W_in;
+  private array $W_res;
+  private array $bias;
+  private array $W_out;
+  private int $vocabSize = 0;
+
+  public function __construct(Tokenizer $tokenizer) {
+    $this->initFixedWeights();
+    $this->embeddings = [];
+    $this->W_out = [];
   }
 
-  public function add(array $context, int $nextToken): void {
-    $node = &$this->root;
-    foreach ($context as $token) {
-      if (!isset($node['children'][$token])) $node['children'][$token] = ['counts' => [], 'children' => []];
-      $node = &$node['children'][$token];
+  private function initFixedWeights(): void {
+    // Matriz de entrada dispersa
+    $this->W_in = [];
+    $totalIn = $this->reservoirSize * $this->embedDim;
+    $numNonZeroIn = (int)($totalIn * $this->sparsity);
+    for ($k = 0; $k < $numNonZeroIn; $k++) {
+      $i = random_int(0, $this->reservoirSize - 1);
+      $j = random_int(0, $this->embedDim - 1);
+      $val = (mt_rand(-100, 100) / 1000.0);
+      $this->W_in[] = [$i, $j, $val];
     }
-    if (!isset($node['counts'][$nextToken])) {
-      $node['counts'][$nextToken] = 1;
-    } else {
-      $node['counts'][$nextToken]++;
+
+    // Matriz recurrente dispersa
+    $this->W_res = [];
+    $totalRes = $this->reservoirSize * $this->reservoirSize;
+    $numNonZeroRes = (int)($totalRes * $this->sparsity);
+    for ($k = 0; $k < $numNonZeroRes; $k++) {
+      $i = random_int(0, $this->reservoirSize - 1);
+      $j = random_int(0, $this->reservoirSize - 1);
+      $val = (mt_rand(-100, 100) / 1000.0);
+      $this->W_res[] = [$i, $j, $val];
     }
-    if (!isset($this->globalCounts[$nextToken])) {
-      $this->globalCounts[$nextToken] = 1;
-    } else {
-      $this->globalCounts[$nextToken]++;
-    }
-    $this->totalTokens++;
+
+    // Escalar para radio espectral aproximado
+    $scale = $this->spectralRadius / 1.0;
+    foreach ($this->W_res as &$w) $w[2] *= $scale;
+
+    // Bias
+    $this->bias = [];
+    for ($i = 0; $i < $this->reservoirSize; $i++) $this->bias[] = (mt_rand(-10, 10) / 100.0);
   }
 
-  private function getNode(array $context): ?array {
-    $node = $this->root;
-    foreach ($context as $token) {
-      if (!isset($node['children'][$token])) return null;
-      $node = $node['children'][$token];
+  // Asegura que exista embedding y fila en W_out para un token ID
+  private function ensureToken(int $tokenId): void {
+    if (!isset($this->embeddings[$tokenId])) {
+      // Crear embedding aleatorio
+      $vec = [];
+      for ($j = 0; $j < $this->embedDim; $j++) $vec[] = (mt_rand(-100, 100) / 1000.0);
+      $this->embeddings[$tokenId] = $vec;
+
+      // Crear fila en W_out aleatoria
+      $row = [];
+      for ($j = 0; $j < $this->reservoirSize; $j++) $row[] = (mt_rand(-10, 10) / 1000.0);
+      $this->W_out[$tokenId] = $row;
+
+      // Actualizar vocabSize si es necesario
+      if ($tokenId >= $this->vocabSize) $this->vocabSize = $tokenId + 1;
     }
-    return $node;
   }
 
-  public function predict(array $context, int $maxOrder, float $temperature = 1.0, ?int $topK = null, ?float $topP = null): array {
-    $order = min(count($context), $maxOrder);
-    $probs = [];
-    $weight = 1.0;
-    $seen = [];
-
-    for ($o = $order; $o >= 0; $o--) {
-      $subContext = array_slice($context, -$o);
-      $node = $o === 0 ? ['counts' => $this->globalCounts] : $this->getNode($subContext);
-      if (!$node) continue;
-
-      $counts = $node['counts'];
-      if (empty($counts)) continue;
-
-      $total = array_sum($counts);
-      $numSymbols = count($counts);
-      $escapeProb = $numSymbols / ($total + $numSymbols);
-      $factor = $weight * (1 - $escapeProb);
-
-      foreach ($counts as $token => $freq) {
-        if (!isset($seen[$token])) {
-          $probs[$token] = ($probs[$token] ?? 0) + $factor * ($freq / $total);
-          $seen[$token] = true;
-        }
-      }
-      $weight *= $escapeProb;
-      if ($weight < 1e-6) break;
-    }
-
-    if (empty($probs)) $probs[0] = 1.0;
-
-    if ($temperature != 1.0) {
-      $sum = 0.0;
-      foreach ($probs as $token => $p) {
-        $p = pow($p, 1.0 / max($temperature, 0.01));
-        $probs[$token] = $p;
-        $sum += $p;
-      }
-      if ($sum > 0) {
-        foreach ($probs as $token => $p) $probs[$token] = $p / $sum;
-      }
-    }
-
-    if ($topK !== null && $topK > 0 && count($probs) > $topK) {
-      arsort($probs);
-      $probs = array_slice($probs, 0, $topK, true);
-      $sum = array_sum($probs);
-      if ($sum > 0) {
-        foreach ($probs as $token => $p) $probs[$token] = $p / $sum;
-      }
-    }
-
-    if ($topP !== null && $topP > 0.0 && $topP < 1.0) {
-      arsort($probs);
-      $cum = 0.0;
-      $filtered = [];
-      foreach ($probs as $token => $p) {
-        $cum += $p;
-        $filtered[$token] = $p;
-        if ($cum >= $topP) break;
-      }
-      $sum = array_sum($filtered);
-      if ($sum > 0) {
-        foreach ($filtered as $token => $p) $filtered[$token] = $p / $sum;
-      }
-      $probs = $filtered;
-    }
-
-    return $probs;
-  }
-
-  public function save(string $path): void {
-    $fp = fopen($path, 'wb');
-    if (!$fp) return;
-
-    $writeNode = function($node) use (&$writeNode, $fp) {
-      $counts = $node['counts'] ?? [];
-      fwrite($fp, pack('V', count($counts)));
-      foreach ($counts as $token => $count) {
-        fwrite($fp, pack('V', $token));
-        fwrite($fp, pack('V', $count));
-      }
-      $children = $node['children'] ?? [];
-      fwrite($fp, pack('V', count($children)));
-      foreach ($children as $token => $child) {
-        fwrite($fp, pack('V', $token));
-        $writeNode($child);
-      }
-    };
-
-    fwrite($fp, pack('V', count($this->globalCounts)));
-    foreach ($this->globalCounts as $token => $count) {
-      fwrite($fp, pack('V', $token));
-      fwrite($fp, pack('V', $count));
-    }
-
-    fwrite($fp, pack('V', $this->totalTokens));
-    $writeNode($this->root);
-    fclose($fp);
-  }
-
-  public function load(string $path): void {
-    if (!file_exists($path)) return;
-
-    $fp = fopen($path, 'rb');
-    if (!$fp) return;
-
-    $readNode = function() use (&$readNode, $fp) {
-      $node = ['counts' => [], 'children' => []];
-      $countSize = unpack('V', fread($fp, 4))[1];
-      for ($i = 0; $i < $countSize; $i++) {
-        $token = unpack('V', fread($fp, 4))[1];
-        $count = unpack('V', fread($fp, 4))[1];
-        $node['counts'][$token] = $count;
-      }
-      $childrenSize = unpack('V', fread($fp, 4))[1];
-      for ($i = 0; $i < $childrenSize; $i++) {
-        $token = unpack('V', fread($fp, 4))[1];
-        $node['children'][$token] = $readNode();
-      }
-      return $node;
-    };
-
-    $globalSize = unpack('V', fread($fp, 4))[1];
-    for ($i = 0; $i < $globalSize; $i++) {
-      $token = unpack('V', fread($fp, 4))[1];
-      $count = unpack('V', fread($fp, 4))[1];
-      $this->globalCounts[$token] = $count;
-    }
-
-    $this->totalTokens = unpack('V', fread($fp, 4))[1];
-    $this->root = $readNode();
-    fclose($fp);
-  }
-}
-
-class RWKVBlock {
-  public array $wk;
-  public array $wv;
-  public array $wr;
-  public array $ww;
-  public array $w1;
-  public array $w2;
-  public int $dim;
-  public array $state;
-
-  public function __construct(int $dim) {
-    $this->dim = $dim;
-    $this->wk = $this->randomMatrix($dim, $dim);
-    $this->wv = $this->randomMatrix($dim, $dim);
-    $this->wr = $this->randomMatrix($dim, $dim);
-    $this->ww = $this->randomVector($dim);
-    $this->w1 = $this->randomMatrix($dim * 4, $dim);
-    $this->w2 = $this->randomMatrix($dim, $dim * 4);
-    $this->state = ['num' => array_fill(0, $dim, 0.0), 'den' => array_fill(0, $dim, 0.0)];
-  }
-
-  private function randomMatrix(int $rows, int $cols): array {
-    $m = [];
-    for ($i = 0; $i < $rows; $i++) {
-      for ($j = 0; $j < $cols; $j++) $m[$i][$j] = (mt_rand(-100, 100) / 1000);
-    }
-    return $m;
-  }
-
-  private function randomVector(int $dim): array {
-    $v = [];
-    for ($i = 0; $i < $dim; $i++) $v[] = (mt_rand(-100, 100) / 1000);
-    return $v;
-  }
-
-  private function matMul(array $mat, array $vec): array {
-    $res = array_fill(0, count($mat), 0.0);
-    for ($i = 0; $i < count($mat); $i++) {
-      for ($j = 0; $j < count($vec); $j++) $res[$i] += $mat[$i][$j] * $vec[$j];
+  private function sparseMul(array $spMat, array $vec, int $rows): array {
+    $res = array_fill(0, $rows, 0.0);
+    foreach ($spMat as $entry) {
+      [$i, $j, $val] = $entry;
+      $res[$i] += $val * $vec[$j];
     }
     return $res;
   }
 
-  private function sigmoid(float $x): float {
-    return 1.0 / (1.0 + exp(-$x));
-  }
-
-  // WKV computation recurrente
-  private function wkv(array $k, array $v, array $w, array &$state): array {
-    // w es decay por canal (vector)
-    $dim = $this->dim;
-    $out = array_fill(0, $dim, 0.0);
-
-    $num = &$state['num'];
-    $den = &$state['den'];
-
-    for ($i = 0; $i < $dim; $i++) {
-      $expk = exp($k[$i]);
-      $decay = exp(-$w[$i]);
-      $num[$i] = $num[$i] * $decay + $v[$i] * $expk;
-      $den[$i] = $den[$i] * $decay + $expk;
-      $out[$i] = $num[$i] / ($den[$i] + 1e-8);
+  private function updateState(array $state, array $x): array {
+    $resPart = $this->sparseMul($this->W_res, $state, $this->reservoirSize);
+    $inPart = $this->sparseMul($this->W_in, $x, $this->reservoirSize);
+    $newState = [];
+    for ($i = 0; $i < $this->reservoirSize; $i++) {
+      $val = $resPart[$i] + $inPart[$i] + $this->bias[$i];
+      $newState[] = tanh($val);
     }
-
-    return $out;
+    return $newState;
   }
 
-  public function timeMixing(array $x): array {
-    $k = $this->matMul($this->wk, $x);
-    $v = $this->matMul($this->wv, $x);
-    $r = $this->matMul($this->wr, $x);
-    $w = $this->ww;
+  public function trainOnSequence(array $ids): float {
+    $len = count($ids);
+    if ($len < 2) return 0.0;
 
-    $wkv = $this->wkv($k, $v, $w, $this->state);
+    $state = array_fill(0, $this->reservoirSize, 0.0);
+    $totalLoss = 0.0;
 
-    $r_sig = array_map([$this, 'sigmoid'], $r);
-    $out = [];
-    for ($i = 0; $i < $this->dim; $i++) $out[$i] = $r_sig[$i] * $wkv[$i];
-    return $out;
-  }
+    for ($t = 0; $t < $len - 1; $t++) {
+      $tokenId = $ids[$t];
+      $nextId = $ids[$t + 1];
 
-  public function channelMixing(array $x): array {
-    // FFN con gateo
-    $hidden = $this->matMul($this->w1, $x);
-    $hidden = array_map(fn($v) => max(0, $v), $hidden);
-    $gated = array_map(fn($v) => $v * $v, $hidden);
-    return $this->matMul($this->w2, $gated);
-  }
+      // Asegurar que ambos tokens existen
+      $this->ensureToken($tokenId);
+      $this->ensureToken($nextId);
 
-  public function forward(array $x): array {
-    $x = $this->timeMixing($x);
-    $x = $this->channelMixing($x);
-    return $x;
-  }
-}
+      $x = $this->embeddings[$tokenId];
+      $state = $this->updateState($state, $x);
 
-class LLM {
-  private Tokenizer $tokenizer;
-  private PPMTrie $trie;
-  private string $modelDir;
-  private int $maxContext;
-  private array $specialTokens = ['<|SYSTEM|>', '<|USER|>', '<|ASSISTANT|>', '<|EOS|>'];
-  private array $noSpaceBefore = ['.', ',', '!', '?', ';', ':', ')', ']', '}', '”', '’', '»'];
-  private array $noSpaceAfter = ['(', '[', '{', '“', '‘', '«', '¡', '¿'];
-
-  private array $embeddings = [];
-  private int $embedDim = 128;
-  private float $learningRate = 0.001;
-
-  private array $rwkvBlocks = [];
-  private int $numLayers = 4;
-  private array $states = [];
-
-  public function __construct(string $modelDir, int $maxContext = 512) {
-    $this->modelDir = $modelDir;
-    $this->maxContext = $maxContext;
-    if (!is_dir($modelDir)) mkdir($modelDir, 0777, true);
-
-    $tokenizerPath = $modelDir . '/tokenizer.json';
-    $triePath = $modelDir . '/model.ppm';
-    $embedPath = $modelDir . '/embeddings.bin';
-    $rwkvPath = $modelDir . '/rwkv.bin';
-
-    if (file_exists($tokenizerPath)) {
-      $this->tokenizer = new Tokenizer();
-      $this->tokenizer->load($tokenizerPath);
-    } else {
-      $this->tokenizer = new Tokenizer();
-      $this->tokenizer->encode($this->specialTokens);
-    }
-
-    if (file_exists($triePath)) {
-      $this->trie = new PPMTrie();
-      $this->trie->load($triePath);
-    } else {
-      $this->trie = new PPMTrie();
-    }
-
-    if (file_exists($embedPath)) {
-      $this->loadEmbeddings($embedPath);
-    } else {
-      $this->initEmbeddings();
-    }
-
-    if (file_exists($rwkvPath)) {
-      $this->loadRWKV($rwkvPath);
-    } else {
-      for ($i = 0; $i < $this->numLayers; $i++) $this->rwkvBlocks[] = new RWKVBlock($this->embedDim);
-    }
-  }
-
-  private function initEmbeddings(): void {
-    $vocabSize = $this->tokenizer->getVocabSize();
-    for ($i = 0; $i < $vocabSize; $i++) {
-      $vec = $this->randomVector();
-      $this->embeddings[$i] = $this->normalizeVector($vec);
-    }
-  }
-
-  private function randomVector(): array {
-    $vec = [];
-    for ($i = 0; $i < $this->embedDim; $i++) $vec[] = (mt_rand(-100, 100) / 1000);
-    return $vec;
-  }
-
-  private function normalizeVector(array $vec): array {
-    $norm = 0.0;
-    foreach ($vec as $v) $norm += $v * $v;
-    $norm = sqrt($norm);
-    if ($norm < 1e-10) return $vec;
-    $normalized = [];
-    foreach ($vec as $v) $normalized[] = $v / $norm;
-    return $normalized;
-  }
-
-  private function saveEmbeddings(string $path): void {
-    $fp = fopen($path, 'wb');
-    if (!$fp) return;
-    fwrite($fp, pack('V', $this->embedDim));
-    fwrite($fp, pack('V', count($this->embeddings)));
-    foreach ($this->embeddings as $id => $vec) {
-      fwrite($fp, pack('V', $id));
-      foreach ($vec as $val) fwrite($fp, pack('f', $val));
-    }
-    fclose($fp);
-  }
-
-  private function loadEmbeddings(string $path): void {
-    $fp = fopen($path, 'rb');
-    if (!$fp) return;
-    $dim = unpack('V', fread($fp, 4))[1];
-    $this->embedDim = $dim;
-    $count = unpack('V', fread($fp, 4))[1];
-    for ($i = 0; $i < $count; $i++) {
-      $id = unpack('V', fread($fp, 4))[1];
-      $vec = [];
-      for ($j = 0; $j < $dim; $j++) {
-        $val = unpack('f', fread($fp, 4))[1];
-        $vec[] = $val;
-      }
-      $this->embeddings[$id] = $vec;
-    }
-    fclose($fp);
-  }
-
-  private function saveRWKV(string $path): void {
-    $fp = fopen($path, 'wb');
-    if (!$fp) return;
-
-    fwrite($fp, pack('V', count($this->rwkvBlocks))); // numLayers
-    fwrite($fp, pack('V', $this->embedDim));          // dim
-
-    foreach ($this->rwkvBlocks as $block) {
-      $dim = $block->dim;
-
-      // wk
-      for ($i = 0; $i < $dim; $i++) {
-        for ($j = 0; $j < $dim; $j++) fwrite($fp, pack('f', $block->wk[$i][$j]));
-      }
-      // wv
-      for ($i = 0; $i < $dim; $i++) {
-        for ($j = 0; $j < $dim; $j++) fwrite($fp, pack('f', $block->wv[$i][$j]));
-      }
-      // wr
-      for ($i = 0; $i < $dim; $i++) {
-        for ($j = 0; $j < $dim; $j++) fwrite($fp, pack('f', $block->wr[$i][$j]));
-      }
-      // ww
-      for ($i = 0; $i < $dim; $i++) fwrite($fp, pack('f', $block->ww[$i]));
-      // w1 (dim*4 filas, dim columnas)
-      $rowsW1 = $dim * 4;
-      for ($i = 0; $i < $rowsW1; $i++) {
-        for ($j = 0; $j < $dim; $j++) fwrite($fp, pack('f', $block->w1[$i][$j]));
-      }
-      // w2 (dim filas, dim*4 columnas)
-      $colsW2 = $dim * 4;
-      for ($i = 0; $i < $dim; $i++) {
-        for ($j = 0; $j < $colsW2; $j++) fwrite($fp, pack('f', $block->w2[$i][$j]));
-      }
-    }
-    fclose($fp);
-  }
-
-  /**
-   * Carga los bloques RWKV desde un archivo binario.
-   */
-  private function loadRWKV(string $path): void {
-    $fp = fopen($path, 'rb');
-    if (!$fp) return;
-
-    $numLayers = unpack('V', fread($fp, 4))[1];
-    $dim = unpack('V', fread($fp, 4))[1];
-
-    for ($layer = 0; $layer < $numLayers; $layer++) {
-      $block = new RWKVBlock($dim);
-
-      // wk
-      for ($i = 0; $i < $dim; $i++) {
-        for ($j = 0; $j < $dim; $j++) $block->wk[$i][$j] = unpack('f', fread($fp, 4))[1];
-      }
-      // wv
-      for ($i = 0; $i < $dim; $i++) {
-        for ($j = 0; $j < $dim; $j++) $block->wv[$i][$j] = unpack('f', fread($fp, 4))[1];
-      }
-      // wr
-      for ($i = 0; $i < $dim; $i++) {
-        for ($j = 0; $j < $dim; $j++) $block->wr[$i][$j] = unpack('f', fread($fp, 4))[1];
-      }
-      // ww
-      for ($i = 0; $i < $dim; $i++) $block->ww[$i] = unpack('f', fread($fp, 4))[1];
-      // w1 (dim * 4 filas, dim columnas)
-      $rowsW1 = $dim * 4;
-      for ($i = 0; $i < $rowsW1; $i++) {
-        for ($j = 0; $j < $dim; $j++) $block->w1[$i][$j] = unpack('f', fread($fp, 4))[1];
-      }
-      // w2 (dim filas, dim*4 columnas)
-      $colsW2 = $dim * 4;
-      for ($i = 0; $i < $dim; $i++) {
-        for ($j = 0; $j < $colsW2; $j++) $block->w2[$i][$j] = unpack('f', fread($fp, 4))[1];
-      }
-
-      $this->rwkvBlocks[] = $block;
-    }
-    fclose($fp);
-  }
-
-  private function averageEmbedding(array $ids): array {
-    $sum = array_fill(0, $this->embedDim, 0.0);
-    $count = 0;
-    foreach ($ids as $id) {
-      if (isset($this->embeddings[$id])) {
-        $vec = $this->embeddings[$id];
-        for ($i = 0; $i < $this->embedDim; $i++) $sum[$i] += $vec[$i];
-        $count++;
-      }
-    }
-    if ($count === 0) return $sum;
-    for ($i = 0; $i < $this->embedDim; $i++) $sum[$i] /= $count;
-    return $sum;
-  }
-
-  private function cosineSimilarity(array $a, array $b): float {
-    $dot = 0.0;
-    $normA = 0.0;
-    $normB = 0.0;
-    for ($i = 0; $i < $this->embedDim; $i++) {
-      $dot += $a[$i] * $b[$i];
-      $normA += $a[$i] * $a[$i];
-      $normB += $b[$i] * $b[$i];
-    }
-    if ($normA == 0 || $normB == 0) return 0;
-    return $dot / (sqrt($normA) * sqrt($normB));
-  }
-
-  // Procesa un token a través de los bloques RWKV de forma recurrente
-  private function forwardRWKV(int $tokenId, array &$states): array {
-    $x = $this->embeddings[$tokenId] ?? array_fill(0, $this->embedDim, 0.0);
-
-    foreach ($this->rwkvBlocks as $i => $block) {
-      // restaurar estado de la capa
-      if (isset($states[$i])) {
-        $block->state = $states[$i];
-      } else {
-        $block->state = ['num' => array_fill(0, $this->embedDim, 0.0), 'den' => array_fill(0, $this->embedDim, 0.0)];
-      }
-      $x = $block->forward($x);
-      // guardar nuevo estado
-      $states[$i] = $block->state;
-    }
-    return $x;
-  }
-
-  public function train(string $text): void {
-    $batches = preg_split('/(?<=<\|EOS\|>)\n\s*\n\s*(?=<\|)/', $text);
-    foreach ($batches as $batch) {
-      $batch = trim($batch);
-      if (empty($batch)) continue;
-      if (!str_ends_with($batch, '<|EOS|>')) $batch .= '<|EOS|>';
-
-      $tokens = $this->tokenizer->tokenize($batch, false);
-      $ids = $this->tokenizer->encode($tokens);
-      $len = count($ids);
-
-      // Entrenar PPM
-      for ($i = 0; $i < $len - 1; $i++) {
-        $maxOrder = min($this->maxContext, $i + 1);
-        for ($order = 1; $order <= $maxOrder; $order++) {
-          $context = array_slice($ids, $i - $order + 1, $order);
-          $next = $ids[$i + 1];
-          $this->trie->add($context, $next);
-        }
-      }
-
-      // Entrenar embeddings (Hebbian)
-      for ($i = 0; $i < $len - 1; $i++) {
-        $context = array_slice($ids, max(0, $i - 5), $i - max(0, $i - 5) + 1);
-        $next = $ids[$i + 1];
-
-        if (!isset($this->embeddings[$next])) $this->embeddings[$next] = $this->normalizeVector($this->randomVector());
-
-        $contextAvg = $this->averageEmbedding($context);
-        $current = $this->embeddings[$next];
-
-        for ($d = 0; $d < $this->embedDim; $d++) $this->embeddings[$next][$d] += $this->learningRate * ($contextAvg[$d] - $current[$d]);
-
-        $this->embeddings[$next] = $this->normalizeVector($this->embeddings[$next]);
-      }
-    }
-
-    $this->tokenizer->save($this->modelDir . '/tokenizer.json');
-    $this->trie->save($this->modelDir . '/model.ppm');
-    $this->saveEmbeddings($this->modelDir . '/embeddings.bin');
-    $this->saveRWKV($this->modelDir . '/rwkv.bin');
-  }
-
-  public function generate(
-    string $prompt,
-    int $maxTokens = 50,
-    float $temperature = 0.8,
-    ?int $topK = null,
-    float $frequencyPenalty = 0.0,
-    array $stopTokens = [],
-    ?float $topP = null,
-    float $repetitionPenalty = 1.0,
-    float $presencePenalty = 0.0
-  ): string {
-    if(!str_contains($prompt, '<|')) $prompt = "<|USER|>\n".trim($prompt)."\n<|EOS|>\n<|ASSISTANT|>\n";
-    $allStopTokens = array_merge($stopTokens, ['<|EOS|>']);
-    $tokens = $this->tokenizer->tokenize($prompt, true);
-    $ids = $this->tokenizer->encode($tokens);
-    if ($this->tokenizer->getVocabSize() === 0) return $prompt;
-
-    $states = [];
-    $lastOutput = null;
-    foreach ($ids as $id) $lastOutput = $this->forwardRWKV($id, $states);
-
-    $generatedIds = [];
-    $freqCount = [];
-
-    for ($i = 0; $i < $maxTokens; $i++) {
-      $lastNorm = 0.0;
-      foreach ($lastOutput as $v) $lastNorm += $v * $v;
-      $lastNorm = sqrt($lastNorm);
-      if ($lastNorm > 1e-10) {
-        $lastNormalized = [];
-        foreach ($lastOutput as $v) $lastNormalized[] = $v / $lastNorm;
-      } else {
-        $lastNormalized = $lastOutput;
-      }
-
+      // Calcular logits (solo para los tokens que existen en W_out)
       $logits = [];
-      foreach ($this->embeddings as $id => $emb) {
+      foreach ($this->W_out as $id => $row) {
         $dot = 0.0;
-        for ($j = 0; $j < $this->embedDim; $j++) $dot += $lastNormalized[$j] * $emb[$j];
+        for ($j = 0; $j < $this->reservoirSize; $j++) $dot += $row[$j] * $state[$j];
         $logits[$id] = $dot;
       }
 
+      // Softmax y pérdida
       $maxLogit = max($logits);
       $expSum = 0.0;
-      foreach ($logits as $id => $l) {
-        $exp = exp(($l - $maxLogit) / max($temperature, 0.01));
-        $logits[$id] = $exp;
-        $expSum += $exp;
-      }
       $probs = [];
-      foreach ($logits as $id => $e) $probs[$id] = $e / $expSum;
+      foreach ($logits as $id => $l) {
+        $e = exp($l - $maxLogit);
+        $probs[$id] = $e;
+        $expSum += $e;
+      }
+      $loss = -log(($probs[$nextId] ?? 0.0) / $expSum + 1e-10);
+      $totalLoss += $loss;
+
+      // Gradiente de la pérdida con respecto a los logits
+      $dLogits = [];
+      foreach ($logits as $id => $l) $dLogits[$id] = ($probs[$id] / $expSum) - ($id == $nextId ? 1.0 : 0.0);
+
+      foreach ($dLogits as $id => $d) {
+        if (abs($d) < 1e-8) continue;
+        $row = &$this->W_out[$id];
+        for ($j = 0; $j < $this->reservoirSize; $j++) $row[$j] -= $this->lr * $d * $state[$j];
+      }
+    }
+
+    return $totalLoss / ($len - 1);
+  }
+
+  public function generate(array $contextIds, int $maxTokens, float $temperature = 1.0, ?int $topK = null, ?float $topP = null, float $repetitionPenalty = 1.0, float $presencePenalty = 0.0, float $frequencyPenalty = 0.0): array {
+    $state = array_fill(0, $this->reservoirSize, 0.0);
+    foreach ($contextIds as $tokenId) {
+      $this->ensureToken($tokenId);
+      $x = $this->embeddings[$tokenId];
+      $state = $this->updateState($state, $x);
+    }
+
+    $generated = [];
+    $freqCount = [];
+
+    for ($t = 0; $t < $maxTokens; $t++) {
+      $logits = [];
+      foreach ($this->W_out as $id => $row) {
+        $dot = 0.0;
+        for ($j = 0; $j < $this->reservoirSize; $j++) $dot += $row[$j] * $state[$j];
+        $logits[$id] = $dot;
+      }
+
+      if (empty($logits)) break;
+
+      $maxLogit = max($logits);
+      $expSum = 0.0;
+      $probs = [];
+      foreach ($logits as $id => $l) {
+        $e = exp(($l - $maxLogit) / max($temperature, 0.01));
+        $probs[$id] = $e;
+        $expSum += $e;
+      }
+      foreach ($probs as $id => $e) $probs[$id] = $e / $expSum;
 
       if ($topK !== null && $topK > 0 && count($probs) > $topK) {
         arsort($probs);
@@ -718,31 +289,211 @@ class LLM {
       $selected = null;
       foreach ($probs as $id => $p) {
         $cum += $p;
-        if ($rand <= $cum) { $selected = $id; break; }
+        if ($rand <= $cum) {
+          $selected = $id;
+          break;
+        }
       }
       if ($selected === null) $selected = array_key_first($probs) ?? 0;
 
-      $token = $this->tokenizer->decode([$selected])[0];
-      if (in_array($token, $allStopTokens, true)) break;
-
-      $generatedIds[] = $selected;
+      $generated[] = $selected;
       $freqCount[$selected] = ($freqCount[$selected] ?? 0) + 1;
-      $lastOutput = $this->forwardRWKV($selected, $states);
+
+      $this->ensureToken($selected);
+      $x = $this->embeddings[$selected];
+      $state = $this->updateState($state, $x);
     }
 
+    return $generated;
+  }
+
+  public function save(string $path): void {
+    $fp = fopen($path, 'wb');
+    if (!$fp) return;
+    fwrite($fp, pack('V', $this->embedDim));
+    fwrite($fp, pack('V', $this->reservoirSize));
+    fwrite($fp, pack('V', $this->vocabSize));
+
+    // Guardar embeddings (solo los que existen)
+    fwrite($fp, pack('V', count($this->embeddings)));
+    foreach ($this->embeddings as $id => $vec) {
+      fwrite($fp, pack('V', $id));
+      for ($j = 0; $j < $this->embedDim; $j++) fwrite($fp, pack('f', $vec[$j]));
+    }
+
+    // Guardar W_in
+    fwrite($fp, pack('V', count($this->W_in)));
+    foreach ($this->W_in as $e) {
+      fwrite($fp, pack('V', $e[0]));
+      fwrite($fp, pack('V', $e[1]));
+      fwrite($fp, pack('f', $e[2]));
+    }
+
+    // Guardar W_res
+    fwrite($fp, pack('V', count($this->W_res)));
+    foreach ($this->W_res as $e) {
+      fwrite($fp, pack('V', $e[0]));
+      fwrite($fp, pack('V', $e[1]));
+      fwrite($fp, pack('f', $e[2]));
+    }
+
+    // Guardar bias
+    for ($i = 0; $i < $this->reservoirSize; $i++) fwrite($fp, pack('f', $this->bias[$i]));
+
+    // Guardar W_out
+    fwrite($fp, pack('V', count($this->W_out)));
+    foreach ($this->W_out as $id => $row) {
+      fwrite($fp, pack('V', $id));
+      for ($j = 0; $j < $this->reservoirSize; $j++) fwrite($fp, pack('f', $row[$j]));
+    }
+    fclose($fp);
+  }
+
+  public function load(string $path): void {
+    $fp = fopen($path, 'rb');
+    if (!$fp) return;
+    $embedDim = unpack('V', fread($fp, 4))[1];
+    $reservoirSize = unpack('V', fread($fp, 4))[1];
+    $vocabSize = unpack('V', fread($fp, 4))[1];
+    $this->embedDim = $embedDim;
+    $this->reservoirSize = $reservoirSize;
+    $this->vocabSize = $vocabSize;
+
+    // Cargar embeddings
+    $numEmb = unpack('V', fread($fp, 4))[1];
+    $this->embeddings = [];
+    for ($k = 0; $k < $numEmb; $k++) {
+      $id = unpack('V', fread($fp, 4))[1];
+      $vec = [];
+      for ($j = 0; $j < $embedDim; $j++) $vec[] = unpack('f', fread($fp, 4))[1];
+      $this->embeddings[$id] = $vec;
+    }
+
+    // Cargar W_in
+    $numIn = unpack('V', fread($fp, 4))[1];
+    $this->W_in = [];
+    for ($k = 0; $k < $numIn; $k++) {
+      $i = unpack('V', fread($fp, 4))[1];
+      $j = unpack('V', fread($fp, 4))[1];
+      $val = unpack('f', fread($fp, 4))[1];
+      $this->W_in[] = [$i, $j, $val];
+    }
+
+    // Cargar W_res
+    $numRes = unpack('V', fread($fp, 4))[1];
+    $this->W_res = [];
+    for ($k = 0; $k < $numRes; $k++) {
+      $i = unpack('V', fread($fp, 4))[1];
+      $j = unpack('V', fread($fp, 4))[1];
+      $val = unpack('f', fread($fp, 4))[1];
+      $this->W_res[] = [$i, $j, $val];
+    }
+
+    // Cargar bias
+    $this->bias = [];
+    for ($i = 0; $i < $reservoirSize; $i++) $this->bias[] = unpack('f', fread($fp, 4))[1];
+
+    // Cargar W_out
+    $numOut = unpack('V', fread($fp, 4))[1];
+    $this->W_out = [];
+    for ($k = 0; $k < $numOut; $k++) {
+      $id = unpack('V', fread($fp, 4))[1];
+      $row = [];
+      for ($j = 0; $j < $reservoirSize; $j++) $row[] = unpack('f', fread($fp, 4))[1];
+      $this->W_out[$id] = $row;
+    }
+    fclose($fp);
+  }
+}
+
+class LLM {
+  private Tokenizer $tokenizer;
+  private ?EchoStateLM $model;
+  private string $modelDir;
+  private int $maxContext;
+
+  public function __construct(string $modelDir, int $maxContext = 512) {
+    $this->modelDir = $modelDir;
+    $this->maxContext = $maxContext;
+    if (!is_dir($modelDir)) mkdir($modelDir, 0777, true);
+
+    $tokenizerPath = $modelDir . '/tokenizer.json';
+    $modelPath = $modelDir . '/model.bin';
+
+    if (file_exists($tokenizerPath)) {
+      $this->tokenizer = new Tokenizer();
+      $this->tokenizer->load($tokenizerPath);
+    } else {
+      $this->tokenizer = new Tokenizer();
+      $this->tokenizer->encode(['<|SYSTEM|>', '<|USER|>', '<|ASSISTANT|>', '<|EOS|>']);
+    }
+
+    if (file_exists($modelPath)) {
+      $this->model = new EchoStateLM($this->tokenizer);
+      $this->model->load($modelPath);
+    } else {
+      $this->model = new EchoStateLM($this->tokenizer);
+    }
+  }
+
+  public function train(string $text): void {
+    $batches = preg_split('/(?<=<\|EOS\|>)\n\s*\n\s*(?=<\|)/', $text);
+    foreach ($batches as $batch) {
+      $batch = trim($batch);
+      if (empty($batch)) continue;
+      if (!str_ends_with($batch, '<|EOS|>')) $batch .= '<|EOS|>';
+
+      $tokens = $this->tokenizer->tokenize($batch, false);
+      $ids = $this->tokenizer->encode($tokens);
+      if (count($ids) < 2) continue;
+
+      // Asegurar que el modelo conozca todos los IDs (ya se hace internamente)
+      $loss = $this->model->trainOnSequence($ids);
+    }
+
+    $this->save();
+  }
+
+  public function generate(
+    string $prompt,
+    int $maxTokens = 50,
+    float $temperature = 0.8,
+    ?int $topK = null,
+    float $frequencyPenalty = 0.0,
+    array $stopTokens = [],
+    ?float $topP = null,
+    float $repetitionPenalty = 1.0,
+    float $presencePenalty = 0.0
+  ): string {
+    if (!$this->tokenizer->getVocabSize()) return $prompt;
+
+    if (!str_contains($prompt, '<|')) $prompt = "<|USER|>\n" . trim($prompt) . "\n<|EOS|>\n<|ASSISTANT|>\n";
+
+    $tokens = $this->tokenizer->tokenize($prompt, true);
+    $contextIds = $this->tokenizer->encode($tokens);
+    if (count($contextIds) > $this->maxContext) $contextIds = array_slice($contextIds, -$this->maxContext);
+
+    $generatedIds = $this->model->generate($contextIds, $maxTokens, $temperature, $topK, $topP, $repetitionPenalty, $presencePenalty, $frequencyPenalty);
+
     $outputTokens = $this->tokenizer->decode($generatedIds);
-    $filteredTokens = array_filter($outputTokens, fn($t) => !in_array($t, $this->specialTokens));
-    return trim($this->joinTokens($filteredTokens));
+    $filtered = array_filter($outputTokens, fn($t) => !in_array($t, ['<|SYSTEM|>', '<|USER|>', '<|ASSISTANT|>', '<|EOS|>']));
+    return $this->joinTokens($filtered);
   }
 
   private function joinTokens(array $tokens): string {
+    $noSpaceBefore = ['.', ',', '!', '?', ';', ':', ')', ']', '}', '”', '’', '»'];
+    $noSpaceAfter = ['(', '[', '{', '“', '‘', '«', '¡', '¿'];
     $result = '';
     $prevToken = '';
     foreach ($tokens as $token) {
-      if ($token === "\n") { $result .= "\n"; $prevToken = "\n"; continue; }
+      if ($token === "\n") {
+        $result .= "\n";
+        $prevToken = "\n";
+        continue;
+      }
       $addSpace = false;
       if ($result !== '') {
-        if (!in_array($token, $this->noSpaceBefore) && !in_array($prevToken, $this->noSpaceAfter)) $addSpace = true;
+        if (!in_array($token, $noSpaceBefore) && !in_array($prevToken, $noSpaceAfter)) $addSpace = true;
       }
       if ($addSpace) $result .= ' ';
       $result .= $token;
@@ -751,7 +502,24 @@ class LLM {
     return $result;
   }
 
+  private function save(): void {
+    $this->tokenizer->save($this->modelDir . '/tokenizer.json');
+    if ($this->model) $this->model->save($this->modelDir . '/model.bin');
+  }
+
   public function getVocabSize(): int {
     return $this->tokenizer->getVocabSize();
+  }
+
+  public function deleteModelFiles(): void {
+    $files = [
+      $this->modelDir . '/tokenizer.json',
+      $this->modelDir . '/model.bin',
+    ];
+    foreach ($files as $file) {
+      if (file_exists($file)) unlink($file);
+    }
+    // Reiniciar modelo
+    $this->model = new EchoStateLM($this->tokenizer);
   }
 }

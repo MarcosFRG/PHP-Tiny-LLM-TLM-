@@ -1,2 +1,3 @@
 RewriteEngine On
 RewriteRule ^chat/completions$ /OpenAI.php [L]
+RewriteRule ^models$ /Models.php [L]

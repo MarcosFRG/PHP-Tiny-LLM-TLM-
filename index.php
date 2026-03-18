@@ -1,7 +1,8 @@
 <?php
 require_once 'LLM.php';
 session_start();
-$modelDir = 'models/tiny-php';
+if(!file_exists('all-models')) mkdir('all-models');
+$modelDir = 'all-models/tiny-php';
 $maxContext = 512;
 $llm = new LLM($modelDir, $maxContext);
 $action = $_POST['action'] ?? $_GET['action'] ?? '';
@@ -153,9 +154,7 @@ if ($action === 'delete_model' && $_SERVER['REQUEST_METHOD'] === 'POST') {
     try {
         $files = [
             $modelDir . '/tokenizer.json',
-            $modelDir . '/model.ppm',
-            $modelDir . '/embeddings.bin',
-            $modelDir . '/rwkv.bin'
+            $modelDir . '/model.bin',
         ];
         $deleted = [];
         $errors = [];
@@ -636,14 +635,10 @@ if ($action === 'delete_model' && $_SERVER['REQUEST_METHOD'] === 'POST') {
             if (data.success) {
                 msgDiv.className = 'message success';
                 msgDiv.textContent = data.message;
-                if (data.deleted && data.deleted.length > 0) {
-                    msgDiv.textContent += ' Archivos eliminados: ' + data.deleted.join(', ');
-                }
+                if (data.deleted && data.deleted.length > 0) msgDiv.textContent += ' Archivos eliminados: ' + data.deleted.join(', ');
                 addDebugEntry('🗑️ MODELO ELIMINADO', data);
                 document.getElementById('chat-area').innerHTML = '<div class="chat-message bot-message">Modelo reiniciado. Escribe algo...</div>';
-                setTimeout(() => {
-                    location.reload();
-                }, 2000);
+                deleteBtn.disabled = false;
             } else {
                 msgDiv.className = 'message error';
                 msgDiv.textContent = data.message;
