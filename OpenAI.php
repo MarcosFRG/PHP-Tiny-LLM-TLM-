@@ -23,14 +23,14 @@ $gInput = '';
 foreach($messages as $msg){
   switch($msg['role'] ?? ''){
     case 'system':
-      $gInput .= "<|SYSTEM|>\n{$msg['content']}\n<|EOS|>\n";
+      $gInput .= "<|SYSTEM|>{$msg['content']}";
       break;
     case 'assistant':
-      $gInput .= "<|ASSISTANT|>\n{$msg['content']}\n<|EOS|>\n";
+      $gInput .= "<|ASSISTANT|>{$msg['content']}";
       break;
     case 'user':
       $text = $msg['content'] ?? $msg['content']['text'] ?? '';
-      $gInput .= "<|USER|>\n$text\n<|EOS|>\n";
+      $gInput .= "<|USER|>$text";
   }
 }
 
@@ -45,7 +45,7 @@ $llm = new LLM($model, 512);
 $topK = $topK > 0 ? $topK : null;
 
 $startTime = microtime(true);
-$response = $llm->generate($gInput."<|ASSISTANT|>\n", $maxTokens, $temperature, $topK, $frequencyPenalty, [], $topP, $repetitionPenalty, $presencePenalty);
+$response = $llm->generate($gInput."<|ASSISTANT|>", $maxTokens, $temperature, $topK, $frequencyPenalty, [], $topP, $repetitionPenalty, $presencePenalty);
 $msTime = round((microtime(true) - $startTime) * 1000);
 
 $promptTokens = count($llm->tokenizer->tokenize($gInput));
