@@ -2,7 +2,7 @@
 require_once 'LLM.php';
 session_start();
 if(!file_exists('all-models')) mkdir('all-models');
-$modelDir = 'all-models/tiny-php';
+$modelDir = 'all-models/'.$_SESSION['model']??'tiny-php';
 $maxContext = 512;
 $action = $_POST['action'] ?? $_GET['action'] ?? '';
 if(!isset($_SESSION['chat_history'])) $_SESSION['chat_history'] = [];
@@ -41,7 +41,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
             echo json_encode(['success' => false, 'message' => 'La pregunta y la respuesta no pueden estar vacías.']);
             exit;
         }
-        $text = "<|USER|>\n$question\n<|EOS|>\n<|ASSISTANT|>\n$answer\n<|EOS|>";
+        $text = "<|USER|>$question<|ASSISTANT|>$answer";
         $llm->train($text);
         echo json_encode([
             'success' => true,
@@ -116,12 +116,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
     $_SESSION['chat_history'] = [];
     echo json_encode(['success' => true, 'message' => 'Historial borrado']);
     exit;
-  }elseif($action === 'set_topk' && $_SERVER['REQUEST_METHOD'] === 'POST'){
-    header('Content-Type: application/json');
-    $topK = (int)($_POST['top_k'] ?? 10);
-    // El método setDefaultTopK no existe en LLM; se omite o se podría almacenar en sesión si se desea.
-    echo json_encode(['success' => true, 'message' => "Top-K cambiado a $topK (sin efecto permanente)"]);
-    exit;
   }elseif($action === 'delete_model' && $_SERVER['REQUEST_METHOD'] === 'POST'){
     header('Content-Type: application/json');
     try {
@@ -164,20 +158,20 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
         .app-container {
             max-width: 1300px;
             width: 100%;
-            background: rgba(255,255,255,0.7);
+            background: #ffffffb3;
             backdrop-filter: blur(10px);
             -webkit-backdrop-filter: blur(10px);
             border-radius: 2.5rem;
-            box-shadow: 0 25px 50px -12px rgba(0,0,0,0.25);
+            box-shadow: 0 25px 50px -12px #00000040;
             overflow: hidden;
-            border: 1px solid rgba(255,255,255,0.5);
+            border: 1px solid #ffffff80;
         }
 
         /* Tabs */
         .tabs {
             display: flex;
-            background: rgba(255,255,255,0.4);
-            border-bottom: 1px solid rgba(0,0,0,0.05);
+            background: #ffffff66;
+            border-bottom: 1px solid #0000000d;
             padding: 0 2rem;
             gap: 0.5rem;
             flex-wrap: wrap;
@@ -193,12 +187,12 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
         }
         .tab:hover {
             color: #4f46e5;
-            background: rgba(79,70,229,0.04);
+            background: #4f46e50a;
         }
         .tab.active {
             color: #4f46e5;
             border-bottom-color: #4f46e5;
-            background: linear-gradient(to top, rgba(79,70,229,0.08), transparent);
+            background: linear-gradient(to top, #4f46e514, transparent);
         }
 
         /* Contenido */
@@ -250,7 +244,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
         textarea:focus, input:focus, select:focus {
             outline: none;
             border-color: #4f46e5;
-            box-shadow: 0 0 0 3px rgba(79,70,229,0.2);
+            box-shadow: 0 0 0 3px #4f46e533;
         }
 
         /* Botones */
@@ -264,7 +258,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
             font-size: 1rem;
             cursor: pointer;
             transition: background 0.15s ease, transform 0.1s ease, box-shadow 0.15s ease;
-            box-shadow: 0 4px 6px -2px rgba(79,70,229,0.3);
+            box-shadow: 0 4px 6px -2px #4f46e54d;
             display: inline-flex;
             align-items: center;
             justify-content: center;
@@ -272,7 +266,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
         }
         button:hover {
             background: #4338ca;
-            box-shadow: 0 8px 12px -4px rgba(79,70,229,0.4);
+            box-shadow: 0 8px 12px -4px #4f46e566;
         }
         button:active {
             transform: scale(0.98);
@@ -289,18 +283,18 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
         }
         button.success {
             background: #10b981;
-            box-shadow: 0 4px 6px -2px rgba(16,185,129,0.3);
+            box-shadow: 0 4px 6px -2px #10b9814d;
         }
         button.success:hover { background: #059669; }
         button.warning {
             background: #f59e0b;
             color: white;
-            box-shadow: 0 4px 6px -2px rgba(245,158,11,0.3);
+            box-shadow: 0 4px 6px -2px #f59e0b4d;
         }
         button.warning:hover { background: #d97706; }
         button.danger {
             background: #ef4444;
-            box-shadow: 0 4px 6px -2px rgba(239,68,68,0.3);
+            box-shadow: 0 4px 6px -2px #ef44444d;
         }
         button.danger:hover { background: #dc2626; }
 
@@ -473,7 +467,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
             display: none;
             position: fixed;
             top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.6);
+            background: #00000099;
             backdrop-filter: blur(5px);
             align-items: center;
             justify-content: center;
@@ -488,7 +482,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
             width: 90%;
             max-height: 80vh;
             overflow-y: auto;
-            box-shadow: 0 30px 60px rgba(0,0,0,0.3);
+            box-shadow: 0 30px 60px #0000004d;
         }
         .modal-content pre {
             background: #f1f4f9;
@@ -508,7 +502,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
             display: inline-block;
             width: 1.2rem;
             height: 1.2rem;
-            border: 2px solid rgba(79,70,229,0.3);
+            border: 2px solid #4f46e54d;
             border-top-color: #4f46e5;
             border-radius: 50%;
             animation: spin 0.7s linear infinite;
@@ -520,7 +514,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
 <div class="app-container">
     <!-- Tabs -->
     <div class="tabs">
-        <div class="tab active" data-tab="train">🧠 Entrenar</div>
+        <div class="tab active" data-tab="train">🧠 Entrenar (recomendado)</div>
         <div class="tab" data-tab="qa">❓ QA</div>
         <div class="tab" data-tab="chat">💬 Chatear <span class="badge">Top-K/P</span></div>
         <div class="tab" data-tab="debug">🐞 Debug</div>
@@ -531,7 +525,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
         <h2>Entrenar modelo con texto libre</h2>
         <form id="train-form">
             <label>📄 Texto de entrenamiento:</label>
-            <textarea id="train-text" rows="8" placeholder="Pega aquí cualquier texto, artículo, libro..."></textarea>
+            <textarea id="train-text" rows="8" placeholder="Pega aquí cualquier texto, artículo, libro…"></textarea>
             <div class="stats">
                 <span class="stat-item" id="char-count">0 caracteres</span>
                 <span class="stat-item" id="word-count">0 palabras</span>
@@ -546,9 +540,9 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
         <h2>Entrenar con pregunta/respuesta</h2>
         <form id="qa-form">
             <label>❓ Pregunta:</label>
-            <textarea id="qa-question" rows="3" placeholder="Escribe la pregunta..."></textarea>
+            <textarea id="qa-question" rows="3" placeholder="Escribe la pregunta…"></textarea>
             <label>💡 Respuesta:</label>
-            <textarea id="qa-answer" rows="3" placeholder="Escribe la respuesta..."></textarea>
+            <textarea id="qa-answer" rows="3" placeholder="Escribe la respuesta…"></textarea>
             <div class="stats">
                 <span class="stat-item" id="qa-char-count">0 caracteres</span>
                 <span class="stat-item" id="qa-word-count">0 palabras</span>
@@ -576,11 +570,11 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
                     </div>
                 <?php endforeach; ?>
             <?php else: ?>
-                <div class="chat-message bot-message">🤖 Modelo listo. Escribe algo...</div>
+                <div class="chat-message bot-message">🤖 Modelo listo. Escribe algo…</div>
             <?php endif; ?>
         </div>
         <div class="chat-input">
-            <input type="text" id="chat-input" placeholder="Mensaje..." autocomplete="off">
+            <input type="text" id="chat-input" placeholder="Mensaje…" autocomplete="off">
             <button id="send-btn">Enviar</button>
         </div>
 
@@ -630,7 +624,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
                 <span>📡 Comunicaciones</span>
                 <span class="debug-clear" onclick="clearDebug()">Limpiar</span>
             </div>
-            <div id="debug-content">Esperando actividad...</div>
+            <div id="debug-content">Esperando actividad…</div>
         </div>
         <div id="raw-error" class="error-detail" style="display: none;"></div>
         <div style="margin-top: 2rem;">
@@ -654,7 +648,6 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
         </div>
     </div>
 </div>
-
 <script>
     // Elementos DOM
     const tabs = document.querySelectorAll('.tab');
@@ -805,7 +798,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
         const msgDiv = document.getElementById('train-message');
         const btn = document.getElementById('train-btn');
         if (!text) { msgDiv.className = 'message error'; msgDiv.textContent = 'El texto no puede estar vacío.'; return; }
-        msgDiv.className = 'message'; msgDiv.textContent = 'Entrenando...';
+        msgDiv.className = 'message'; msgDiv.textContent = 'Entrenando…';
         btn.disabled = true;
         const formData = new FormData(); formData.append('action', 'train'); formData.append('text', text);
         addDebugEntry('📤 ENVIANDO ENTRENAMIENTO', { length: text.length, preview: text.substring(0,100)+'…' });
@@ -843,7 +836,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
         const msgDiv = document.getElementById('qa-message');
         const btn = document.getElementById('qa-btn');
         if (!question || !answer) { msgDiv.className = 'message error'; msgDiv.textContent = 'Completa ambos campos.'; return; }
-        msgDiv.className = 'message'; msgDiv.textContent = 'Entrenando QA...';
+        msgDiv.className = 'message'; msgDiv.textContent = 'Entrenando QA…';
         btn.disabled = true;
         const formData = new FormData(); formData.append('action', 'train_qa'); formData.append('question', question); formData.append('answer', answer);
         addDebugEntry('📤 ENVIANDO QA', { question, answer });
@@ -878,7 +871,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
         if (!confirm('⚠️ ¿Eliminar TODO el modelo permanentemente?')) return;
         const msgDiv = document.getElementById('delete-model-message');
         const btn = document.getElementById('delete-model-btn');
-        msgDiv.className = 'message'; msgDiv.textContent = 'Eliminando...';
+        msgDiv.className = 'message'; msgDiv.textContent = 'Eliminando…';
         btn.disabled = true;
         const formData = new FormData(); formData.append('action', 'delete_model');
         try {
@@ -918,7 +911,7 @@ if($_SERVER['REQUEST_METHOD'] == 'POST'){
         chatInput.value = '';
         const loader = document.createElement('div');
         loader.className = 'chat-message bot-message';
-        loader.innerHTML = '<span class="loader"></span> Pensando...';
+        loader.innerHTML = '<span class="loader"></span> Pensando…';
         chatArea.appendChild(loader);
         chatArea.scrollTop = chatArea.scrollHeight;
         const formData = new FormData();

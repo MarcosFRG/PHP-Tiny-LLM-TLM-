@@ -1,38 +1,194 @@
 <?php
-class Tokenizer {
+class BPETokenizer {
     private array $vocab = [];
     private array $reverseVocab = [];
-    private int $nextId = 0;
+    private array $merges = [];
     private array $cache = [];
+    private string $spaceToken = '▁';
+    private string $unkToken = '<UNK>';
+    private array $specialTokens = ['<|SYSTEM|>', '<|USER|>', '<|ASSISTANT|>', '<|EOS|>'];
 
-    public function __construct(array $vocab = []) {
+    public function __construct(array $vocab = [], array $merges = []) {
         if (!empty($vocab)) {
             $this->vocab = $vocab;
             $this->reverseVocab = array_flip($vocab);
-            $this->nextId = count($vocab);
         }
+        $this->merges = $merges;
+        $this->addToken($this->spaceToken);
+        foreach ($this->specialTokens as $st) $this->addToken($st);
+    }
+
+    private function addToken(string $token): int {
+        if (!isset($this->reverseVocab[$token])) {
+            $id = count($this->vocab);
+            $this->vocab[$id] = $token;
+            $this->reverseVocab[$token] = $id;
+            return $id;
+        }
+        return $this->reverseVocab[$token];
+    }
+
+    private function preTokenize(string $text): array {
+        preg_match_all('/(<\|[^>]+\|>|<[^>]+>|\p{L}+|\p{N}+|\p{So}+|\p{P}+|\n)/u', $text, $matches);
+        return $matches[0];
+    }
+
+    public function learnFromText(string $text, int $maxMerges = 10): void {
+        $segments = $this->preTokenize($text);
+        $wordFreqs = [];
+        $first = true;
+        foreach ($segments as $seg) {
+            $isSpecial = in_array($seg, $this->specialTokens, true);
+            if (!$isSpecial && preg_match('/^\p{L}+$/u', $seg) && !$first) {
+                $word = $this->spaceToken . $seg;
+            } elseif (!$isSpecial && preg_match('/^\p{N}+$/u', $seg) && !$first) {
+                $word = $this->spaceToken . $seg;
+            } else {
+                $word = $seg;
+            }
+            $wordFreqs[$word] = ($wordFreqs[$word] ?? 0) + 1;
+            $first = false;
+        }
+
+        $splits = [];
+        foreach ($wordFreqs as $word => $freq) {
+            if (in_array($word, $this->specialTokens, true)) {
+                $splits[$word] = [$this->reverseVocab[$word]];
+            } else {
+                $chars = preg_split('//u', $word, -1, PREG_SPLIT_NO_EMPTY);
+                $ids = [];
+                foreach ($chars as $ch) {
+                    if (!isset($this->reverseVocab[$ch])) $this->addToken($ch);
+                    $ids[] = $this->reverseVocab[$ch];
+                }
+                foreach ($this->merges as [$a, $b]) {
+                    $newIds = [];
+                    $i = 0;
+                    while ($i < count($ids)) {
+                        if ($i < count($ids)-1 && $this->vocab[$ids[$i]] === $a && $this->vocab[$ids[$i+1]] === $b) {
+                            $mergedToken = $a . $b;
+                            if (!isset($this->reverseVocab[$mergedToken])) {
+                                $this->addToken($mergedToken);
+                            }
+                            $newIds[] = $this->reverseVocab[$mergedToken];
+                            $i += 2;
+                        } else {
+                            $newIds[] = $ids[$i];
+                            $i++;
+                        }
+                    }
+                    $ids = $newIds;
+                }
+                $splits[$word] = $ids;
+            }
+        }
+
+        for ($m = 0; $m < $maxMerges; $m++) {
+            $pairFreqs = [];
+            foreach ($splits as $word => $ids) {
+                $freq = $wordFreqs[$word];
+                for ($i = 0; $i < count($ids) - 1; $i++) {
+                    $a = $this->vocab[$ids[$i]];
+                    $b = $this->vocab[$ids[$i+1]];
+                    $pair = $a . '|' . $b;
+                    $pairFreqs[$pair] = ($pairFreqs[$pair] ?? 0) + $freq;
+                }
+            }
+            if (empty($pairFreqs)) break;
+
+            arsort($pairFreqs);
+            $bestPair = key($pairFreqs);
+            list($a, $b) = explode('|', $bestPair);
+            $newToken = $a.$b;
+
+            if (isset($this->reverseVocab[$newToken])) continue;
+
+            $newId = $this->addToken($newToken);
+            $this->merges[] = [$a, $b];
+
+            foreach ($splits as $word => &$ids) {
+                $newIds = [];
+                $i = 0;
+                while ($i < count($ids)) {
+                    if ($i < count($ids)-1 && $this->vocab[$ids[$i]] === $a && $this->vocab[$ids[$i+1]] === $b) {
+                        $newIds[] = $newId;
+                        $i += 2;
+                    } else {
+                        $newIds[] = $ids[$i];
+                        $i++;
+                    }
+                }
+                $ids = $newIds;
+            }
+        }
+
+        $this->cache = [];
     }
 
     public function tokenize(string $text, bool $useCache = true): array {
         $text = trim($text);
         if ($text === '') return [];
         if ($useCache && isset($this->cache[$text])) return $this->cache[$text];
-        preg_match_all('/(<\|[^>]+\|>|<[^>]+>|\p{L}+|\p{N}+|\p{So}+|\p{P}+|\n)/u', $text, $matches);
-        $tokens = $matches[0];
-        if ($useCache) $this->cache[$text] = $tokens;
-        return $tokens;
+
+        $segments = $this->preTokenize($text);
+        $result = [];
+        $first = true;
+
+        foreach ($segments as $seg) {
+            if (in_array($seg, $this->specialTokens, true)) {
+                $result[] = $seg;
+                $first = false;
+                continue;
+            }
+
+            if (preg_match('/^\p{L}+$/u', $seg) || preg_match('/^\p{N}+$/u', $seg)) {
+                if (!$first) {
+                    $word = $this->spaceToken . $seg;
+                } else {
+                    $word = $seg;
+                }
+                $first = false;
+            } else {
+                $word = $seg;
+                $first = false;
+            }
+
+            $subTokens = $this->bpeSplit($word);
+            $result = array_merge($result, $subTokens);
+        }
+
+        if ($useCache) $this->cache[$text] = $result;
+        return $result;
+    }
+
+    private function bpeSplit(string $word): array {
+        $chars = preg_split('//u', $word, -1, PREG_SPLIT_NO_EMPTY);
+        if ($chars === false) return [$word];
+
+        foreach ($this->merges as [$a, $b]) {
+            $new = [];
+            $i = 0;
+            while ($i < count($chars)) {
+                if ($i < count($chars)-1 && $chars[$i] === $a && $chars[$i+1] === $b) {
+                    $new[] = $a . $b;
+                    $i += 2;
+                } else {
+                    $new[] = $chars[$i];
+                    $i++;
+                }
+            }
+            $chars = $new;
+        }
+        return $chars;
     }
 
     public function encode(array $tokens): array {
         $ids = [];
         foreach ($tokens as $token) {
-            if (!isset($this->reverseVocab[$token])) {
-                $this->reverseVocab[$token] = $this->nextId;
-                $this->vocab[$this->nextId] = $token;
-                $ids[] = $this->nextId;
-                $this->nextId++;
-            } else {
+            if (isset($this->reverseVocab[$token])) {
                 $ids[] = $this->reverseVocab[$token];
+            } else {
+                $ids[] = $this->reverseVocab[$this->unkToken] ?? 0;
             }
         }
         return $ids;
@@ -40,23 +196,33 @@ class Tokenizer {
 
     public function decode(array $ids): array {
         $tokens = [];
-        foreach ($ids as $id) $tokens[] = $this->vocab[$id] ?? '<UNK>';
+        foreach ($ids as $id) $tokens[] = $this->vocab[$id] ?? $this->unkToken;
         return $tokens;
+    }
+
+    public function detokenize(array $tokens): string {
+        return preg_replace('/\s+/', ' ', str_replace($this->spaceToken, ' ', implode('', $tokens)));
     }
 
     public function save(string $path): void {
         file_put_contents($path, json_encode([
             'vocab' => $this->vocab,
             'reverseVocab' => $this->reverseVocab,
-            'nextId' => $this->nextId
-        ]));
+            'merges' => $this->merges,
+            'spaceToken' => $this->spaceToken,
+            'unkToken' => $this->unkToken,
+            'specialTokens' => $this->specialTokens
+        ], JSON_UNESCAPED_UNICODE));
     }
 
     public function load(string $path): void {
         $data = json_decode(file_get_contents($path), true);
         $this->vocab = $data['vocab'];
         $this->reverseVocab = $data['reverseVocab'];
-        $this->nextId = $data['nextId'];
+        $this->merges = $data['merges'];
+        $this->spaceToken = $data['spaceToken'] ?? '▁';
+        $this->unkToken = $data['unkToken'] ?? '<UNK>';
+        $this->specialTokens = $data['specialTokens'] ?? ['<|SYSTEM|>', '<|USER|>', '<|ASSISTANT|>', '<|EOS|>'];
     }
 
     public function getVocabSize(): int {
@@ -75,7 +241,6 @@ class AdamOptimizer {
     public function update(array &$param, array $grad, float $lr = 0.001): void {
         $this->t++;
         if (is_array($param) && isset($param[0]) && is_array($param[0])) {
-            // matriz 2D
             foreach ($param as $i => &$row) {
                 foreach ($row as $j => &$p) {
                     $g = $grad[$i][$j] ?? 0;
@@ -86,15 +251,12 @@ class AdamOptimizer {
                     }
                     $this->m[$idx] = $this->beta1 * $this->m[$idx] + (1 - $this->beta1) * $g;
                     $this->v[$idx] = $this->beta2 * $this->v[$idx] + (1 - $this->beta2) * $g * $g;
-
                     $m_hat = $this->m[$idx] / (1 - pow($this->beta1, $this->t));
                     $v_hat = $this->v[$idx] / (1 - pow($this->beta2, $this->t));
-
                     $p -= $lr * $m_hat / (sqrt($v_hat) + $this->eps);
                 }
             }
         } elseif (is_array($param)) {
-            // vector 1D
             foreach ($param as $i => &$p) {
                 $g = $grad[$i] ?? 0;
                 $idx = (string)$i;
@@ -104,10 +266,8 @@ class AdamOptimizer {
                 }
                 $this->m[$idx] = $this->beta1 * $this->m[$idx] + (1 - $this->beta1) * $g;
                 $this->v[$idx] = $this->beta2 * $this->v[$idx] + (1 - $this->beta2) * $g * $g;
-
                 $m_hat = $this->m[$idx] / (1 - pow($this->beta1, $this->t));
                 $v_hat = $this->v[$idx] / (1 - pow($this->beta2, $this->t));
-
                 $p -= $lr * $m_hat / (sqrt($v_hat) + $this->eps);
             }
         }
@@ -116,12 +276,12 @@ class AdamOptimizer {
 
 class RWKVBlock {
     public int $dim;
-    public array $wk, $wv, $wr; // [dim][dim]
-    public array $ww; // [dim]
-    public array $w1, $w2; // w1: [dim*4][dim], w2: [dim][dim*4]
+    public array $wk, $wv, $wr;
+    public array $ww;
+    public array $w1, $w2;
 
     private array $grad_wk, $grad_wv, $grad_wr, $grad_ww, $grad_w1, $grad_w2;
-    private array $cache; // almacena variables del último forward
+    private array $cache;
 
     public function __construct(int $dim) {
         $this->dim = $dim;
@@ -188,7 +348,6 @@ class RWKVBlock {
 
     public function forward(array $x, array &$state): array {
         $dim = $this->dim;
-        // time mixing
         $k = $this->matMul($this->wk, $x);
         $v = $this->matMul($this->wv, $x);
         $r = $this->matMul($this->wr, $x);
@@ -216,13 +375,13 @@ class RWKVBlock {
         $time_out = [];
         for ($i = 0; $i < $dim; $i++) $time_out[$i] = $r_sig[$i] * $wkv_out[$i];
 
-        // channel mixing
         $hidden = $this->matMul($this->w1, $time_out);
-        for ($i = 0; $i < count($hidden); $i++) if ($hidden[$i] < 0) $hidden[$i] = 0.0;
+        for ($i = 0; $i < count($hidden); $i++) {
+            if ($hidden[$i] < 0) $hidden[$i] = 0.0;
+        }
         $gated = array_map(fn($h) => $h * $h, $hidden);
         $out = $this->matMul($this->w2, $gated);
 
-        // Guardar todo en caché para el backward
         $this->cache = [
             'x' => $x,
             'k' => $k,
@@ -248,8 +407,6 @@ class RWKVBlock {
         $c = $this->cache;
         $dim = $this->dim;
 
-        // --- Gradientes canal mixing ---
-        // out = w2 * gated
         $dgated = $this->matMulTranspose($this->w2, $dy);
         $dhidden = [];
         $hidden = $c['hidden'];
@@ -259,16 +416,13 @@ class RWKVBlock {
         }
         $dtime_out = $this->matMulTranspose($this->w1, $dhidden);
 
-        // Acumular gradientes de w2
         for ($i = 0; $i < $dim; $i++) {
             for ($j = 0; $j < count($c['gated']); $j++) $this->grad_w2[$i][$j] += $dy[$i] * $c['gated'][$j];
         }
-        // Acumular gradientes de w1
         for ($i = 0; $i < count($c['hidden']); $i++) {
             for ($j = 0; $j < $dim; $j++) $this->grad_w1[$i][$j] += $dhidden[$i] * $c['time_out'][$j];
         }
 
-        // --- Gradientes time mixing ---
         $dr_sig = [];
         $dwkv_out = [];
         for ($i = 0; $i < $dim; $i++) {
@@ -279,7 +433,6 @@ class RWKVBlock {
         $r_sig = $c['r_sig'];
         for ($i = 0; $i < $dim; $i++) $dr[$i] = $dr_sig[$i] * $r_sig[$i] * (1 - $r_sig[$i]);
 
-        // Gradientes de WKV
         $dk = array_fill(0, $dim, 0.0);
         $dv = array_fill(0, $dim, 0.0);
         $dw = array_fill(0, $dim, 0.0);
@@ -301,14 +454,13 @@ class RWKVBlock {
             $dout_i = $dwkv_out[$i];
 
             $dv[$i] = $dout_i * ($expk / $denom);
-            $dk[$i] = $dout_i * ( ($v[$i] * $expk * $denom - $num[$i] * $expk) / ($denom * $denom) );
+            $dk[$i] = $dout_i * (($v[$i] * $expk * $denom - $num[$i] * $expk) / ($denom * $denom));
             $dwkv_ddecay = ($num_prev[$i] * $den[$i] - $num[$i] * $den_prev[$i]) / ($denom * $denom);
             $dw[$i] = $dout_i * $dwkv_ddecay * (-$decay);
             $dnum_prev[$i] = $dout_i * ($decay / $denom);
-            $dden_prev[$i] = $dout_i * ( - $num[$i] * $decay / ($denom * $denom) );
+            $dden_prev[$i] = $dout_i * (-$num[$i] * $decay / ($denom * $denom));
         }
 
-        // Acumular gradientes de wk, wv, wr, ww
         for ($i = 0; $i < $dim; $i++) {
             for ($j = 0; $j < $dim; $j++) {
                 $this->grad_wk[$i][$j] += $dk[$i] * $c['x'][$j];
@@ -318,7 +470,6 @@ class RWKVBlock {
             $this->grad_ww[$i] += $dw[$i];
         }
 
-        // Gradiente de entrada dx
         $dx = array_fill(0, $dim, 0.0);
         $temp = $this->matMulTranspose($this->wk, $dk);
         for ($i = 0; $i < $dim; $i++) $dx[$i] += $temp[$i];
@@ -346,27 +497,17 @@ class RWKVBlock {
 }
 
 class LLM {
-    private Tokenizer $tokenizer;
+    private BPETokenizer $tokenizer;
     private string $modelDir;
     private int $maxContext;
     private array $specialTokens = ['<|SYSTEM|>', '<|USER|>', '<|ASSISTANT|>', '<|EOS|>'];
-    private array $noSpaceBefore = ['.', ',', '!', '?', ';', ':', ')', ']', '}', '”', '’', '»'];
-    private array $noSpaceAfter = ['(', '[', '{', '“', '‘', '«', '¡', '¿'];
 
-    // Embeddings
     private array $embeddings = [];
     private int $embedDim = 128;
-    private float $learningRate = 0.001;
-
-    // RWKV
-    private array $rwkvBlocks = [];
+    private float $learningRate = 0.01;
     private int $numLayers = 4;
-    private array $optimizers; // optimizadores por bloque y embeddings
-
-    // Para BPTT: almacenar estados y salidas durante forward
-    private array $forwardStates; // estados después de cada paso por capa
-    private array $forwardOutputs; // salida de la última capa en cada paso
-    private array $forwardInputs; // embedding de entrada en cada paso
+    private array $rwkvBlocks = [];
+    private array $optimizers;
 
     public function __construct(string $modelDir, int $maxContext = 512) {
         $this->modelDir = $modelDir;
@@ -378,11 +519,10 @@ class LLM {
         $rwkvPath = $modelDir . '/rwkv.bin';
 
         if (file_exists($tokenizerPath)) {
-            $this->tokenizer = new Tokenizer();
+            $this->tokenizer = new BPETokenizer();
             $this->tokenizer->load($tokenizerPath);
         } else {
-            $this->tokenizer = new Tokenizer();
-            $this->tokenizer->encode($this->specialTokens);
+            $this->tokenizer = new BPETokenizer();
         }
 
         if (file_exists($embedPath)) {
@@ -397,7 +537,6 @@ class LLM {
             for ($i = 0; $i < $this->numLayers; $i++) $this->rwkvBlocks[] = new RWKVBlock($this->embedDim);
         }
 
-        // Inicializar optimizadores (uno por bloque y uno para embeddings)
         $this->optimizers['emb'] = new AdamOptimizer();
         for ($i = 0; $i < $this->numLayers; $i++) $this->optimizers["block_$i"] = new AdamOptimizer();
     }
@@ -462,26 +601,20 @@ class LLM {
 
         foreach ($this->rwkvBlocks as $block) {
             $dim = $block->dim;
-            // wk
             for ($i = 0; $i < $dim; $i++) {
                 for ($j = 0; $j < $dim; $j++) fwrite($fp, pack('f', $block->wk[$i][$j]));
             }
-            // wv
             for ($i = 0; $i < $dim; $i++) {
                 for ($j = 0; $j < $dim; $j++) fwrite($fp, pack('f', $block->wv[$i][$j]));
             }
-            // wr
             for ($i = 0; $i < $dim; $i++) {
                 for ($j = 0; $j < $dim; $j++) fwrite($fp, pack('f', $block->wr[$i][$j]));
             }
-            // ww
             for ($i = 0; $i < $dim; $i++) fwrite($fp, pack('f', $block->ww[$i]));
-            // w1
             $rowsW1 = $dim * 4;
             for ($i = 0; $i < $rowsW1; $i++) {
                 for ($j = 0; $j < $dim; $j++) fwrite($fp, pack('f', $block->w1[$i][$j]));
             }
-            // w2
             $colsW2 = $dim * 4;
             for ($i = 0; $i < $dim; $i++) {
                 for ($j = 0; $j < $colsW2; $j++) fwrite($fp, pack('f', $block->w2[$i][$j]));
@@ -499,26 +632,20 @@ class LLM {
 
         for ($layer = 0; $layer < $numLayers; $layer++) {
             $block = new RWKVBlock($dim);
-            // wk
             for ($i = 0; $i < $dim; $i++) {
                 for ($j = 0; $j < $dim; $j++) $block->wk[$i][$j] = unpack('f', fread($fp, 4))[1];
             }
-            // wv
             for ($i = 0; $i < $dim; $i++) {
                 for ($j = 0; $j < $dim; $j++) $block->wv[$i][$j] = unpack('f', fread($fp, 4))[1];
             }
-            // wr
             for ($i = 0; $i < $dim; $i++) {
                 for ($j = 0; $j < $dim; $j++) $block->wr[$i][$j] = unpack('f', fread($fp, 4))[1];
             }
-            // ww
             for ($i = 0; $i < $dim; $i++) $block->ww[$i] = unpack('f', fread($fp, 4))[1];
-            // w1
             $rowsW1 = $dim * 4;
             for ($i = 0; $i < $rowsW1; $i++) {
                 for ($j = 0; $j < $dim; $j++) $block->w1[$i][$j] = unpack('f', fread($fp, 4))[1];
             }
-            // w2
             $colsW2 = $dim * 4;
             for ($i = 0; $i < $dim; $i++) {
                 for ($j = 0; $j < $colsW2; $j++) $block->w2[$i][$j] = unpack('f', fread($fp, 4))[1];
@@ -530,40 +657,33 @@ class LLM {
 
     public function train(string $text): void {
         $text = preg_replace('/\s*(<\|[^|]+\|>)\s*/', '$1', $text);
-        if (!str_ends_with($text, '<|EOS|>')) $text .= '<|EOS|>';
 
+        $this->tokenizer->learnFromText($text, 5);
+
+        // Asegurar que los embeddings cubren todo el vocabulario
         $this->ensureEmbeddingsSize();
 
+        // Tokenizar con el vocabulario actualizado
         $tokens = $this->tokenizer->tokenize($text, false);
         $ids = $this->tokenizer->encode($tokens);
         $len = count($ids);
         if ($len < 2) return;
 
-        // Inicializar arrays para guardar información del forward
-        $states = []; // estados por capa en cada paso
-        $outputs = []; // salida de la última capa en cada paso
-        $inputs = []; // embedding de entrada en cada paso
-        $logits_list = []; // logits para cada paso para pérdida
+        $states = [];
+        $outputs = [];
+        $inputs = [];
+        $logits_list = [];
 
-        // Inicializar estados de todas las capas
         $current_states = array_fill(0, $this->numLayers, ['num' => array_fill(0, $this->embedDim, 0.0), 'den' => array_fill(0, $this->embedDim, 0.0)]);
 
-        // Forward pass: guardar todo
         for ($pos = 0; $pos < $len - 1; $pos++) {
             $x = $this->embeddings[$ids[$pos]] ?? array_fill(0, $this->embedDim, 0.0);
             $inputs[] = $x;
 
-            // Pasar por capas
             for ($l = 0; $l < $this->numLayers; $l++) $x = $this->rwkvBlocks[$l]->forward($x, $current_states[$l]);
-            $outputs[] = $x; // salida de la última capa en este paso
-
-            // Guardar estados después del paso
+            $outputs[] = $x;
             $states[$pos] = $current_states;
-            /*$states[$pos] = array_map(function($st) {
-                return ['num' => $st['num'], 'den' => $st['den']];
-            }, $current_states);*/
 
-            // Calcular logits (producto punto con embeddings normalizados)
             $logits = [];
             $norm_out = $this->normalizeVector($x);
             foreach ($this->embeddings as $emb_id => $emb) {
@@ -574,29 +694,23 @@ class LLM {
             $logits_list[] = $logits;
         }
 
-        // --- Backward pass (BPTT) ---
-        // Inicializar acumuladores de gradientes de estados por capa y paso
+        // Backward pass (BPTT)
         $dstate_acum = [];
         for ($l = 0; $l < $this->numLayers; $l++) {
             for ($t = 0; $t < $len - 1; $t++) $dstate_acum[$l][$t] = ['num' => array_fill(0, $this->embedDim, 0.0), 'den' => array_fill(0, $this->embedDim, 0.0)];
         }
 
-        // Bucle desde el último paso hasta el primero
         for ($t = $len - 2; $t >= 0; $t--) {
-            // Gradiente de la pérdida en este paso
             $target = $ids[$t + 1];
             $logits = $logits_list[$t];
-            // Softmax
             $max = max($logits);
             $sumExp = 0.0;
             foreach ($logits as $l) $sumExp += exp($l - $max);
             $softmax = [];
             foreach ($logits as $id => $l) $softmax[$id] = exp($l - $max) / $sumExp;
-            // Derivada cross-entropy: softmax - one_hot
             $dlogits = [];
             foreach ($softmax as $id => $p) $dlogits[$id] = $p - ($id == $target ? 1.0 : 0.0);
 
-            // Gradiente respecto a la salida de la última capa (output)
             $dout = array_fill(0, $this->embedDim, 0.0);
             foreach ($dlogits as $id => $dl) {
                 if (isset($this->embeddings[$id])) {
@@ -605,30 +719,23 @@ class LLM {
                 }
             }
 
-            // Propagar hacia atrás a través de las capas
             $dy = $dout;
             for ($l = $this->numLayers - 1; $l >= 0; $l--) {
                 $block = $this->rwkvBlocks[$l];
-                // Establecer el estado de la capa en este paso (debe coincidir con el forward)
-                // No necesitamos pasarlo porque el bloque ya lo tiene en su caché del forward (se guardó al llamar a forward)
-                // Llamamos a backward
                 $res = $block->backward($dy);
                 $dx = $res['dx'];
                 $dnum_prev = $res['dnum_prev'];
                 $dden_prev = $res['dden_prev'];
 
-                // Acumular gradientes de estados previos (para el paso t-1)
                 if ($t > 0) {
                     for ($i = 0; $i < $this->embedDim; $i++) {
                         $dstate_acum[$l][$t-1]['num'][$i] += $dnum_prev[$i];
                         $dstate_acum[$l][$t-1]['den'][$i] += $dden_prev[$i];
                     }
                 }
-                // El gradiente para la capa inferior es $dx
                 $dy = $dx;
             }
 
-            // Actualizar embedding del token de entrada ($ids[$t])
             $input_id = $ids[$t];
             if (isset($this->embeddings[$input_id])) {
                 for ($d = 0; $d < $this->embedDim; $d++) $this->embeddings[$input_id][$d] -= $this->learningRate * $dy[$d];
@@ -637,7 +744,7 @@ class LLM {
 
             foreach ($dlogits as $id => $dl) {
                 if ($dl != 0 && isset($this->embeddings[$id])) {
-                    $factor = -$this->learningRate * $dl; // negativo porque queremos minimizar pérdida
+                    $factor = -$this->learningRate * $dl;
                     $out_norm = $this->normalizeVector($outputs[$t]);
                     for ($d = 0; $d < $this->embedDim; $d++) $this->embeddings[$id][$d] += $factor * $out_norm[$d];
                     $this->embeddings[$id] = $this->normalizeVector($this->embeddings[$id]);
@@ -645,10 +752,8 @@ class LLM {
             }
         }
 
-        // Aplicar gradientes acumulados en los bloques RWKV
         for ($l = 0; $l < $this->numLayers; $l++) $this->rwkvBlocks[$l]->applyGradients($this->optimizers["block_$l"], $this->learningRate);
 
-        // Guardar modelo
         $this->tokenizer->save($this->modelDir . '/tokenizer.json');
         $this->saveEmbeddings($this->modelDir . '/embeddings.bin');
         $this->saveRWKV($this->modelDir . '/rwkv.bin');
@@ -665,14 +770,13 @@ class LLM {
         float $repetitionPenalty = 1.0,
         float $presencePenalty = 0.0
     ): string {
-        if (!str_contains($prompt, '<|')) $prompt = "<|USER|>\n" . trim($prompt) . "\n<|EOS|>\n<|ASSISTANT|>\n";
+        if (!str_contains($prompt, '<|')) $prompt = "<|USER|>".trim($prompt)."<|ASSISTANT|>";
         $prompt = preg_replace('/\s*(<\|[^|]+\|>)\s*/', '$1', $prompt);
         $allStopTokens = array_merge($stopTokens, ['<|EOS|>']);
         $tokens = $this->tokenizer->tokenize($prompt, true);
         $ids = $this->tokenizer->encode($tokens);
         if ($this->tokenizer->getVocabSize() === 0) return $prompt;
 
-        // Estados para generación
         $states = array_fill(0, $this->numLayers, ['num' => array_fill(0, $this->embedDim, 0.0), 'den' => array_fill(0, $this->embedDim, 0.0)]);
         $lastOutput = null;
         foreach ($ids as $id) {
@@ -693,7 +797,6 @@ class LLM {
                 $logits[$id] = $dot;
             }
 
-            // Aplicar temperatura y sampling
             $maxLogit = max($logits);
             $expSum = 0.0;
             foreach ($logits as $id => $l) {
@@ -725,7 +828,6 @@ class LLM {
                 $probs = $filtered;
             }
 
-            // Penalizaciones
             if ($frequencyPenalty > 0) {
                 foreach ($probs as $id => $p) {
                     $count = $freqCount[$id] ?? 0;
@@ -752,7 +854,6 @@ class LLM {
                 foreach ($probs as $id => $p) $probs[$id] = $p / $sum;
             }
 
-            // Muestreo
             $rand = mt_rand() / mt_getrandmax();
             $cum = 0.0;
             $selected = null;
@@ -763,45 +864,30 @@ class LLM {
             if ($selected === null) $selected = array_key_first($probs) ?? 0;
 
             $token = $this->tokenizer->decode([$selected])[0];
+
             if (in_array($token, $allStopTokens, true)) break;
 
-            $generatedIds[] = $selected;
-            $freqCount[$selected] = ($freqCount[$selected] ?? 0) + 1;
+            if (!in_array($token, $this->specialTokens, true)) {
+                $generatedIds[] = $selected;
+                $freqCount[$selected] = ($freqCount[$selected] ?? 0) + 1;
+            }
 
-            // Forward del token seleccionado para continuar
             $x = $this->embeddings[$selected] ?? array_fill(0, $this->embedDim, 0.0);
             for ($l = 0; $l < $this->numLayers; $l++) $x = $this->rwkvBlocks[$l]->forward($x, $states[$l]);
             $lastOutput = $x;
         }
 
-        return trim($this->joinTokens(array_filter($this->tokenizer->decode($generatedIds), fn($t) => !in_array($t, $this->specialTokens))));
+        // Decodificar y limpiar cualquier token especial residual
+        $filteredTokens = array_filter($this->tokenizer->decode($generatedIds), fn($t) => !in_array($t, $this->specialTokens, true));
+        return trim($this->tokenizer->detokenize($filteredTokens));
     }
 
     private function ensureEmbeddingsSize(): void {
         $vocabSize = $this->tokenizer->getVocabSize();
         $currentSize = count($this->embeddings);
         if ($vocabSize > $currentSize) {
-            for ($i = $currentSize; $i < $vocabSize; $i++) {
-                $vec = $this->randomVector();
-                $this->embeddings[$i] = $this->normalizeVector($vec);
-            }
+            for ($i = $currentSize; $i < $vocabSize; $i++) $this->embeddings[$i] = $this->normalizeVector($this->randomVector());
         }
-    }
-
-    private function joinTokens(array $tokens): string {
-        $result = '';
-        $prevToken = '';
-        foreach ($tokens as $token) {
-            if ($token === "\n") { $result .= "\n"; $prevToken = "\n"; continue; }
-            $addSpace = false;
-            if ($result !== '') {
-                if (!in_array($token, $this->noSpaceBefore) && !in_array($prevToken, $this->noSpaceAfter)) $addSpace = true;
-            }
-            if ($addSpace) $result .= ' ';
-            $result .= $token;
-            $prevToken = $token;
-        }
-        return $result;
     }
 
     public function deleteModel(): void {
